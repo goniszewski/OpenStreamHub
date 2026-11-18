@@ -18,6 +18,19 @@ export type ProfileDirection = 'next' | 'previous';
 // End sound of a 'timer' action: a closed set of macOS system sounds (TimerSound in profile.rs). Absent means glass.
 export type TimerSound = 'basso' | 'blow' | 'bottle' | 'frog' | 'funk' | 'glass' | 'hero' | 'morse' | 'ping' | 'pop'
   | 'purr' | 'sosumi' | 'submarine' | 'tink' | 'none';
+// One plugin parameter value: text (also a choice's id), a number or a bool (PluginValue in plugin.rs).
+export type PluginValue = string | number | boolean;
+export interface PluginAction {
+  type: 'plugin'; plugin: string; min_version: string; action: string;
+  params?: Record<string, PluginValue>; variables?: string[];
+}
+// A check one of a plugin's manifest conditions answers when an if / else runs (Condition::Plugin in profile.rs): the
+// fields of a plugin action, the condition's id for the action's, and the answer it holds for. params and variables
+// follow the plugin action rules (omitted when empty). Never a key-face test: faces take variable-only conditions.
+export interface PluginCondition {
+  plugin: string; min_version: string; condition: string;
+  params?: Record<string, PluginValue>; variables?: string[]; value: boolean;
+}
 // One step of a multi_action: any executable action except another multi_action.
 export type StepAction =
   | { type: 'volume'; delta: number }
@@ -27,6 +40,16 @@ export type StepAction =
   | { type: 'launch_app'; bundle_id: string }
   | { type: 'set_volume'; percent: number }
   | { type: 'open_url'; url: string }
+  // Runs one executable directly (no shell, no terminal window) and waits for it to exit: an absolute or ~/ path, up to
+  // 32 arguments passed as they are, and a starting folder (the home folder when omitted). args and directory are
+  // omitted, never empty lists or null. Allowed as a multi_action or conditional step. With variables (omitted when off),
+  // {{name}} references to declared variables in the arguments are filled in when the key is pressed.
+  | { type: 'run_program'; program: string; args?: string[]; directory?: string; variables?: boolean }
+  // Asks a plugin (a separate program the app runs while a Live profile uses it) to perform one of its manifest's
+  // actions, and waits for the answer. plugin is the manifest's reverse-DNS id; params are checked against the manifest
+  // by the app; variables lists the text parameters whose {{name}} references are filled in when pressed (only ones the
+  // manifest allows). params and variables are omitted when empty. Allowed as a multi_action or conditional step.
+  | PluginAction
   | { type: 'media'; command: MediaCommand }
   | { type: 'system'; command: SystemCommand }
   // press_enter may be omitted in JSON (defaults to false); the service always writes it.
@@ -106,7 +129,9 @@ export type LeafCondition =
   // The frontmost application has this bundle identifier (read on this Mac when the key is pressed).
   | { focused_app: string }
   | { variable_is: { name: string; value: VariableValue } }
-  | { variable_at_least: { name: string; value: number } };
+  | { variable_at_least: { name: string; value: number } }
+  // Asks an enabled plugin when the key is pressed (Live only); a failed check fails the press.
+  | { plugin: PluginCondition };
 export type BranchStep = StepAction | ConditionalAction;
 export interface ConditionalAction { type: 'conditional'; when: Condition; then: BranchStep[]; else?: BranchStep[] }
 export type BindingAction =

@@ -1068,7 +1068,7 @@ describe('ServicePanel variants', () => {
   it('stays out of the workspace when nothing needs attention, and is whole under Settings', () => {
     expect(renderToStaticMarkup(<ServicePanel variant="workspace" />)).toBe('');
     const full = renderToStaticMarkup(<ServicePanel />);
-    expect(full).toContain('Active profile');
+    expect(full).toContain('Run diagnostics');
     expect(full).toContain('service-controls');
   });
 });

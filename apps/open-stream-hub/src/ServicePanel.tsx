@@ -637,7 +637,7 @@ export function ServicePanel({ run = idleRunSession, variant = 'full' }: { run?:
   const by = (value: ServiceRun['profileSwitchedBy']) => t(value === 'key' ? 'service.by.key' : value === 'rule' ? 'service.by.rule' : 'service.by.other');
   const seconds = countdownSeconds(session?.nextAttemptAt, now);
   // On the workspace the panel only speaks up when something needs attention or a Test run has activity to read;
-  // the header carries Run, Stop and the Live or Test badge. Everything else lives under Settings, Run details.
+  // the header carries Run, Stop and the Live or Test badge. Everything else lives under Settings, Run diagnostics.
   const full = variant === 'full';
   const attention = !!activeRun && (activeRun.state === 'failed' || stale || (!!session && phase !== 'running' && phase !== undefined)
     || (activeRun.state === 'exited' && activeRun.exitCode !== undefined && activeRun.exitCode !== 0));

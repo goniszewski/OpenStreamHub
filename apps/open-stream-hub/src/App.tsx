@@ -13,6 +13,8 @@ import { StreamlabsSettingsStore } from './streamlabs-settings';
 import { StreamlabsSettingsPanel } from './StreamlabsSettingsPanel';
 import { PermissionsPanel, missingPermissions } from './PermissionsPanel';
 import { AgentToolsPanel } from './AgentToolsPanel';
+import { createPluginManageStore } from './plugin-manage-store';
+import { PluginsPanel } from './PluginsPanel';
 import { PermissionsPrompt } from './PermissionsPrompt';
 import { SquareEye } from './SquareEye';
 import { StartupPanel } from './StartupPanel';
@@ -28,8 +30,8 @@ import { focusWhenRendered, NoticeRegion, noticeFallbackFocusId } from './Notice
 import { serviceResumeId, runBlockNotes, RunBlockerNotice, RunHeaderControl, ServicePanel, useRunSession } from './ServicePanel';
 import { OnboardingDialog } from './OnboardingDialog';
 import { StarterDialog } from './StarterDialog';
-import { bundledPacks, parsePack } from './preset-packs';
-import type { PresetPack, RejectedPack } from './preset-packs';
+import { bundledPacks, loadFolderPacks, parsePack } from './preset-packs';
+import type { FolderListing, FolderPacks, PresetPack, RejectedPack } from './preset-packs';
 import { LiveOfferDialog } from './LiveOfferDialog';
 import type { StarterEntry } from './StarterDialog';
 import { markStartersOffered, nextModulePrompt, profileModules, shouldOfferStarters, starters } from './starter-model';
@@ -360,6 +362,9 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   const [testWhileEditing, setTestWhileEditing] = useState(() => readTestWhileEditingSetting(webStorage()));
+  // Install… and Remove… in Settings > Plugins, kept here so leaving Settings neither loses a picked folder nor lets a
+  // second folder picker open.
+  const [pluginManage] = useState(createPluginManageStore);
   const switcherRef = useRef<HTMLDivElement>(null);
   const { draft, busy, error, notice, noticeAction, pendingIntent, bootstrapError } = state;
   const { profile, profileId, contentHash } = draft;
@@ -427,6 +432,22 @@ export default function App() {
 
   const focusHeader = focusStatus(focusState, state.profiles);
   const [packReport, setPackReport] = useState<RejectedPack | null>(null);
+  // Packs from `<app data>/packs/`, read again each time the chooser opens so a file dropped in shows up without a restart.
+  const [folderPacks, setFolderPacks] = useState<{ packs: FolderPacks | null; error: string | null }>({ packs: null, error: null });
+  const starterOpen = starter !== null;
+  const starterOpenRef = useRef(starterOpen);
+  starterOpenRef.current = starterOpen;
+  useEffect(() => {
+    if (!desktop) return;
+    // Cleared on close, so a reopened chooser never offers a pack whose file has gone, nor an old error.
+    if (!starterOpen) { setFolderPacks({ packs: null, error: null }); return; }
+    let current = true;
+    setFolderPacks({ packs: null, error: null });
+    invoke<FolderListing>('list_folder_packs')
+      .then(listing => { if (current) setFolderPacks({ packs: loadFolderPacks(listing, bundledPacks.packs), error: null }); })
+      .catch((reason: unknown) => { if (current) setFolderPacks({ packs: null, error: String(reason) }); });
+    return () => { current = false; };
+  }, [desktop, starterOpen]);
   // A preset pack becomes a new saved profile (dry run only until allowed). When it names an app, the notice offers a
   // focused-app rule that switches to the profile whenever that app comes to the front.
   function pickPack(pack: PresetPack) {
@@ -676,7 +697,7 @@ export default function App() {
         onToggle={() => setNavCollapsed(value => { writeNavCollapsed(webStorage(), !value); return !value; })}
         runningProfile={<RunningProfile profiles={choices.map(item => ({ id: item.value, name: item.builtIn ? `${item.name} (built-in)` : item.name }))} runs={runSession.service.runs} defaultId={display.defaultProfile.profileId} enabled={desktop}
           busy={runningBusy} onChoose={chooseProfile} />} />
-      <main className="main-content" id={noticeFallbackFocusId} tabIndex={-1}>
+      <main className={`main-content${page === 'workspace' ? ' workspace-page' : ''}`} id={noticeFallbackFocusId} tabIndex={-1}>
         {!desktop && <div className="browser-banner" role="status"><Monitor size={19} /><div><strong>Desktop app required</strong><span>This browser preview is read-only. Profile storage, validation and hardware access need the native app.</span></div></div>}
         {busy && <div className="operation-status" role="status"><LoaderCircle size={16} className="spinning" />{busy}…</div>}
         {bootstrapError && <div className="alert error" role="alert"><CircleHelp size={19} /><span><strong>Could not open profile storage.</strong> {bootstrapError.message}
@@ -700,7 +721,7 @@ export default function App() {
         {page === 'demos' && <DemosPage desktop={desktop} devices={pickableModules} runtime={desktop ? demoRuntime : undefined} />}
         {page === 'compatibility' && <CompatibilityPage />}
         {page === 'about' && <AboutPage invoke={desktop ? ((command, args) => invoke(command, args)) : undefined} />}
-        {page === 'settings' && <SettingsPage mac={mac} desktop={desktop} noticesEnabled={noticesEnabled} onNoticesEnabled={on => notices.setEnabled(on)} onShowGuide={() => setGuide({ open: true, step: 0 })} storagePath={state.storagePath} themePicker={themePicker} autosave={state.autosave} onAutosave={on => { writeAutosaveSetting(webStorage(), on); session.setAutosave(on); }} display={<DisplaySettingsPanel store={displaySettings} runner={runner} profiles={state.profiles} testWhileEditing={testWhileEditing} onTestWhileEditing={on => { writeTestWhileEditingSetting(webStorage(), on); setTestWhileEditing(on); }} />} obs={<ObsSettingsPanel store={obsSettings} runner={runner} />} streamlabs={<StreamlabsSettingsPanel store={streamlabsSettings} runner={runner} />} builtIn={<BuiltInProfiles saved={state.profiles} />} startup={<StartupPanel desktop={desktop} invoke={(command, args) => invoke(command, args)} checkPermissions={checkPermissions} onCheckPermissions={on => { writePermissionCheckSetting(webStorage(), on); setCheckPermissions(on); }} />} updates={<UpdatesPanel desktop={desktop} invoke={(command, args) => invoke(command, args)} version={appVersion} daily={dailyUpdateCheck} onDaily={on => { writeUpdateCheckSetting(webStorage(), on); setDailyUpdateCheck(on); }} />} permissions={<PermissionsPanel desktop={desktop} invoke={(command, args) => invoke(command, args)} />} agents={<AgentToolsPanel desktop={desktop} invoke={(command, args) => invoke(command, args)} />} runDetails={<ServicePanel run={runSession} />} diagnostics={<DiagnosticsPanel desktop={desktop} invoke={(command, args) => invoke(command, args)} profile={profile} runner={runner} feed={feed} />} />}
+        {page === 'settings' && <SettingsPage mac={mac} desktop={desktop} noticesEnabled={noticesEnabled} onNoticesEnabled={on => notices.setEnabled(on)} onShowGuide={() => setGuide({ open: true, step: 0 })} storagePath={state.storagePath} themePicker={themePicker} autosave={state.autosave} onAutosave={on => { writeAutosaveSetting(webStorage(), on); session.setAutosave(on); }} display={<DisplaySettingsPanel store={displaySettings} runner={runner} profiles={state.profiles} testWhileEditing={testWhileEditing} onTestWhileEditing={on => { writeTestWhileEditingSetting(webStorage(), on); setTestWhileEditing(on); }} />} obs={<ObsSettingsPanel store={obsSettings} runner={runner} />} streamlabs={<StreamlabsSettingsPanel store={streamlabsSettings} runner={runner} />} builtIn={<BuiltInProfiles saved={state.profiles} />} startup={<StartupPanel desktop={desktop} invoke={(command, args) => invoke(command, args)} checkPermissions={checkPermissions} onCheckPermissions={on => { writePermissionCheckSetting(webStorage(), on); setCheckPermissions(on); }} />} updates={<UpdatesPanel desktop={desktop} invoke={(command, args) => invoke(command, args)} version={appVersion} daily={dailyUpdateCheck} onDaily={on => { writeUpdateCheckSetting(webStorage(), on); setDailyUpdateCheck(on); }} />} permissions={<PermissionsPanel desktop={desktop} invoke={(command, args) => invoke(command, args)} />} agents={<AgentToolsPanel desktop={desktop} invoke={(command, args) => invoke(command, args)} />} plugins={<PluginsPanel desktop={desktop} invoke={(command, args) => invoke(command, args)} manageStore={pluginManage} />} runDetails={<ServicePanel run={runSession} />} diagnostics={<DiagnosticsPanel desktop={desktop} invoke={(command, args) => invoke(command, args)} profile={profile} runner={runner} feed={feed} />} />}
       </main>
     </div>
     <NoticeRegion store={notices} onReview={() => { setPage('workspace'); focusWhenRendered(() => document.getElementById(serviceResumeId)); }} />
@@ -726,7 +747,8 @@ export default function App() {
         setStarter(null);
       }}
       onGuide={() => { setStarter(null); setGuide({ open: true, step: 0 }); }}
-      packs={bundledPacks.packs} rejected={bundledPacks.rejected} packReport={packReport} onPickPack={pickPack} onLoadPack={file => { void loadPackFile(file); }} />
+      packs={bundledPacks.packs} rejected={bundledPacks.rejected} packReport={packReport} onPickPack={pickPack} onLoadPack={file => { void loadPackFile(file); }}
+      folder={folderPacks.packs} folderError={folderPacks.error} onOpenFolder={desktop ? () => { void invoke('open_packs_folder').catch((reason: unknown) => { if (starterOpenRef.current) setFolderPacks(current => ({ ...current, error: String(reason) })); }); } : undefined} />
     {updatePrompt && <UpdatePrompt info={updatePrompt} onOpen={() => { void invoke('open_release_page').catch(() => {}); }} onClose={() => setUpdatePrompt(null)} />}
     {permissionPrompt && <PermissionsPrompt invoke={(command, args) => invoke(command, args)} onClose={() => setPermissionPrompt(false)} />}
     <ModalDialog open={confirmation !== null} labelledBy="delete-title" describedBy="delete-message" onCancel={() => setConfirmation(null)}>

@@ -90,6 +90,11 @@ export function renameKeypadPage(profile: Profile, path: readonly string[], name
   return replacePage(current.profile, { ...current.page, name });
 }
 
+// Whether a key does anything: a folder or an action key with at least one binding. The Back key always does.
+export function keySlotUsed(slot: KeypadSlot | null | undefined, back = false): boolean {
+  return back || slot?.type === 'folder' || (slot?.type === 'action' && slot.bindings.length > 0);
+}
+
 export function keypadBindingAt(profile: Profile, path: readonly string[], control: number, gesture: KeypadBinding['gesture'], serial: string): KeypadBinding | undefined {
   if (keypadIsBack(path, control)) return undefined;
   const page = keypadPagesAtPath(profile, path).at(-1)!;

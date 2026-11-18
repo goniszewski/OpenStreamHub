@@ -24,6 +24,7 @@ use cooltek_sdk_cli::{
     interrupt::WatchedStdin,
     live_output::TimedStdout,
     live_runtime::{LiveOptions, LiveSummary, run_live, run_live_with_display},
+    plugin_image::{PluginImageTable, PluginImages, PluginKeys},
     service_events::{
         TimerCancelReason, cancel_timers, dial_function_details, emit, end_record, inline_alert,
         plan_report, process_due_timers, process_work, start_record,
@@ -36,6 +37,7 @@ use cooltek_sdk_service::{
     display_sync::KeyImageProvider,
     macos::MacOsDispatcher,
     obs::{OBS_UNAVAILABLE, ObsClient, ObsEndpoint, ObsPassword},
+    plugin::{PLUGIN_UNAVAILABLE, PluginBridge},
     streamlabs::{STREAMLABS_UNAVAILABLE, StreamlabsClient, StreamlabsEndpoint, StreamlabsToken},
 };
 use serde_json::json;
@@ -175,10 +177,25 @@ enum Command {
         /// --exit-on-stdin-eof, whose end-of-file stop is unchanged.
         #[arg(long, requires = "exit_on_stdin_eof")]
         control: bool,
+        /// Run `plugin` actions and plugin conditions through the supervising
+        /// OpenStreamHub app: each press writes a `plugin_invoke` (or, for a
+        /// condition, `plugin_check`) record with a request number, and the
+        /// app answers with a `plugin_result` control request (see
+        /// `cooltek_sdk_service::plugin`). Without it a `plugin` action is
+        /// logged as `action_unavailable` and does nothing. Requires --control.
+        #[arg(long, requires = "control")]
+        plugin_host: bool,
     },
 }
 
 fn main() -> ExitCode {
+    // A panic can end the process without the normal stop of a running
+    // program, which leads a process group of its own: kill it first.
+    let report = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        cooltek_sdk_service::kill_running_programs();
+        report(info);
+    }));
     match run(Cli::parse()) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
@@ -224,6 +241,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
             streamlabs_token_stdin,
             exit_on_stdin_eof,
             control,
+            plugin_host,
         } => {
             let profile = load_profile(profile)?;
             // Before the password read: a terminal, file or /dev/null stdin is
@@ -261,13 +279,20 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
             // faces can follow them.
             let variables = cooltek_sdk_service::SharedVariables::new();
             variables.declare(&profile.variables);
+            // The pictures plugins draw on keys or the dial, shared by the control channel and the display thread.
+            let plugin_images = PluginImageTable::default();
             let artwork = match (display_sync, dial_content) {
                 (false, _) => None,
                 (true, DialContent::Off) => {
-                    // Key faces sit inside the brightness and turn wrappers, so they are dimmed and turned too.
+                    // Key faces and plugin images sit inside the brightness and turn wrappers, so they are dimmed
+                    // and turned too. A face whose condition holds wins over a plugin's image, which wins over
+                    // the key's own artwork.
                     let faces = VariableFaces::prepare(
                         &profile,
-                        PreparedKeyArtwork::prepare_profile(&profile)?,
+                        PluginImages {
+                            inner: PreparedKeyArtwork::prepare_profile(&profile)?,
+                            table: plugin_images.clone(),
+                        },
                         variables.clone(),
                     )?;
                     let keys = match brightness.keys.filter(|&percent| percent < 100) {
@@ -287,9 +312,12 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
                         })
                     })))
                 }
+                // A plugin's picture replaces the dial's face while the current function is the plugin's, and is
+                // turned with it.
                 (true, content) => Some(Artwork::Dial(
                     DialArtwork::prepare(content, &profile, Box::new(SystemClock))?
-                        .with_turn(undo_turn),
+                        .with_turn(undo_turn)
+                        .with_plugin_images(plugin_images.clone()),
                 )),
             };
             // Reject unsupported stdout (such as a regular file) before any HID access.
@@ -347,6 +375,10 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
                 "display_sync_requested":display_sync,
                 "profile_switch_requests":profile_switch_requests,
             });
+            // Only when set, so runs without plugins log exactly what they did before.
+            if plugin_host {
+                details["plugin_host"] = json!(true);
+            }
             // Roller only: whether the SET_IDLE it needs to report on macOS was accepted.
             if let Some(outcome) = &set_idle {
                 details["roller_set_idle"] =
@@ -363,6 +395,36 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
                 details["streamlabs"] = streamlabs_details(streamlabs);
             }
             let control_out = stdout.clone();
+            let plugins = plugin_host.then(|| {
+                let records = Mutex::new(stdout.clone());
+                PluginBridge::new(Box::new(move |record: &serde_json::Value| {
+                    let mut records = records
+                        .lock()
+                        .map_err(|_| io::Error::other("the record writer failed"))?;
+                    io::Write::write_all(&mut *records, format!("{record}\n").as_bytes())?;
+                    io::Write::flush(&mut *records)
+                }))
+            });
+            let dispatcher_plugins = plugins.clone();
+            // A run that draws keypad pages or the dial tells the app which keys plugins draw, and takes their
+            // images.
+            let plugin_keys = match (&plugins, &artwork) {
+                (Some(bridge), Some(Artwork::Keys(_))) => PluginKeys::new(
+                    engine.profile(),
+                    device.clone(),
+                    plugin_images,
+                    bridge.clone(),
+                    variables.clone(),
+                ),
+                (Some(bridge), Some(Artwork::Dial(_))) => Some(PluginKeys::dial(
+                    engine.profile(),
+                    device.clone(),
+                    plugin_images,
+                    bridge.clone(),
+                    variables.clone(),
+                )),
+                _ => None,
+            };
             // The run's mode lives in one flag the dispatcher reads for every action, so a supervisor can switch it
             // in place; without `--control` the dispatcher is fixed at start, as before.
             let mode = control.then(|| Arc::new(AtomicBool::new(execute)));
@@ -377,6 +439,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
                         obs,
                         streamlabs,
                         dispatcher_variables,
+                        dispatcher_plugins,
                     ),
                     stdout,
                 ))
@@ -405,6 +468,8 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
                         can_execute: cfg!(target_os = "macos"),
                     }),
                     variables: Some(variables.clone()),
+                    plugins: plugins.clone(),
+                    plugin_images: plugin_keys.clone(),
                     profile: profile_slot.map(|slot| {
                         let variables = variables.clone();
                         Box::new(move |value: &serde_json::Value| {
@@ -420,10 +485,12 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
                                 .map_err(|error| error.to_string())?;
                             let declared = profile.variables.clone();
                             let engine = live_bindings(profile, module, false, DialContent::Off)?;
+                            let id = engine.id();
                             *slot.lock().map_err(|_| "the profile slot failed".to_string())? =
                                 Some(engine);
-                            // Declared now, so a new variable can be set before the next press.
-                            variables.declare(&declared);
+                            // Declared now, so a new variable can be set before the next press;
+                            // the id marks presses the previous profile planned as swapped out.
+                            variables.swap(&declared, id);
                             Ok(())
                         }) as cooltek_sdk_cli::control::ProfileSwap
                     }),
@@ -468,11 +535,21 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
                     // Fail closed before software mode: folder navigation must
                     // not run live without its display.
                     let display = Some(match artwork {
-                        Artwork::Keys(artwork) => live_display(&shared, selected.module, artwork)?
-                            .with_press_feedback(press_feedback)
-                            .with_variables(variables.clone()),
+                        Artwork::Keys(artwork) => {
+                            let display = live_display(&shared, selected.module, artwork)?
+                                .with_press_feedback(press_feedback)
+                                .with_variables(variables.clone());
+                            match plugin_keys {
+                                Some(keys) => display.with_plugin_keys(keys),
+                                None => display,
+                            }
+                        }
                         Artwork::Dial(artwork) => {
-                            live_dial_display(&shared, selected.module, artwork)?
+                            let display = live_dial_display(&shared, selected.module, artwork)?;
+                            match plugin_keys {
+                                Some(keys) => display.with_plugin_keys(keys),
+                                None => display,
+                            }
                         }
                     });
                     run_live_with_display(
@@ -694,6 +771,7 @@ enum Dispatcher {
         obs: bool,
         /// The same for a Streamlabs endpoint and token.
         streamlabs: bool,
+        plugins: bool,
         macos: MacOsDispatcher,
     },
     /// Dry run and replay: validates only. `obs` and `streamlabs` record
@@ -703,6 +781,7 @@ enum Dispatcher {
     Preview {
         obs: bool,
         streamlabs: bool,
+        plugins: bool,
     },
     MacOs(MacOsDispatcher),
 }
@@ -715,8 +794,10 @@ impl Dispatcher {
         obs: Option<ObsClient>,
         streamlabs: Option<StreamlabsClient>,
         variables: cooltek_sdk_service::SharedVariables,
+        plugins: Option<PluginBridge>,
     ) -> Self {
         let (has_obs, has_streamlabs) = (obs.is_some(), streamlabs.is_some());
+        let has_plugins = plugins.is_some();
         let macos = |abort: Arc<AtomicBool>| {
             let obs = obs.map(|obs| obs.with_cancellation(Arc::clone(&abort)));
             let streamlabs =
@@ -725,12 +806,14 @@ impl Dispatcher {
                 .with_obs(obs)
                 .with_streamlabs(streamlabs)
                 .with_variables(variables)
+                .with_plugins(plugins)
         };
         if let Some(flag) = switchable.filter(|_| cfg!(target_os = "macos")) {
             return Self::Switchable {
                 execute: flag,
                 obs: has_obs,
                 streamlabs: has_streamlabs,
+                plugins: has_plugins,
                 macos: macos(abort),
             };
         }
@@ -740,6 +823,7 @@ impl Dispatcher {
             Self::Preview {
                 obs: has_obs,
                 streamlabs: has_streamlabs,
+                plugins: has_plugins,
             }
         }
     }
@@ -751,11 +835,13 @@ impl Dispatcher {
 fn preview_unavailable(
     obs: bool,
     streamlabs: bool,
+    plugins: bool,
     action: &cooltek_sdk_service::Action,
 ) -> Option<&'static str> {
     (!obs && action.uses_obs())
         .then_some(OBS_UNAVAILABLE)
         .or_else(|| (!streamlabs && action.uses_streamlabs()).then_some(STREAMLABS_UNAVAILABLE))
+        .or_else(|| (!plugins && action.uses_plugins()).then_some(PLUGIN_UNAVAILABLE))
 }
 
 impl ActionDispatcher for Dispatcher {
@@ -799,21 +885,43 @@ impl ActionDispatcher for Dispatcher {
         }
     }
 
+    // Only an executing (Live) run sends events: a Test run never starts a plugin.
+    fn plugin_event(
+        &mut self,
+        action: &cooltek_sdk_service::Action,
+        input: &cooltek_sdk_service::PluginInput,
+    ) {
+        match self {
+            Self::Switchable { execute, macos, .. } => {
+                if execute.load(Ordering::SeqCst) {
+                    macos.plugin_event(action, input);
+                }
+            }
+            Self::MacOs(dispatcher) => dispatcher.plugin_event(action, input),
+            Self::Preview { .. } => {}
+        }
+    }
+
     fn unavailable(&self, action: &cooltek_sdk_service::Action) -> Option<&'static str> {
         match self {
             Self::Switchable {
                 execute,
                 obs,
                 streamlabs,
+                plugins,
                 macos,
             } => {
                 if execute.load(Ordering::SeqCst) {
                     macos.unavailable(action)
                 } else {
-                    preview_unavailable(*obs, *streamlabs, action)
+                    preview_unavailable(*obs, *streamlabs, *plugins, action)
                 }
             }
-            Self::Preview { obs, streamlabs } => preview_unavailable(*obs, *streamlabs, action),
+            Self::Preview {
+                obs,
+                streamlabs,
+                plugins,
+            } => preview_unavailable(*obs, *streamlabs, *plugins, action),
             Self::MacOs(dispatcher) => dispatcher.unavailable(action),
         }
     }
@@ -880,11 +988,12 @@ fn replay(
         session.identity.serial_number.clone(),
     )?;
     let mut input = InputSession::new(device.module);
-    // Replay never has an OBS or Streamlabs endpoint: their actions are
-    // reported as unavailable.
+    // Replay never has an OBS or Streamlabs endpoint or a plugin host: their
+    // actions are reported as unavailable.
     let mut dispatcher = Dispatcher::Preview {
         obs: false,
         streamlabs: false,
+        plugins: false,
     };
     let never = AtomicBool::new(false);
     let mut summary = LiveSummary::default();
@@ -1645,6 +1754,7 @@ mod tests {
             Some(ObsClient::new(endpoint, None)),
             None,
             Default::default(),
+            None,
         );
         assert_eq!(run.unavailable(&scene), None);
         run.dispatch(&scene).unwrap();
@@ -1660,6 +1770,7 @@ mod tests {
             None,
             None,
             Default::default(),
+            None,
         );
         assert_eq!(bare.unavailable(&scene), Some(OBS_UNAVAILABLE));
         assert!(
@@ -1682,6 +1793,7 @@ mod tests {
             None,
             None,
             Default::default(),
+            None,
         );
         assert_eq!(without.unavailable(&scene), Some(OBS_UNAVAILABLE));
         assert_eq!(without.unavailable(&Action::ToggleMute), None);
@@ -1706,6 +1818,7 @@ mod tests {
             Some(ObsClient::new(endpoint, None)),
             Some(streamlabs),
             Default::default(),
+            None,
         );
         assert_eq!(with.unavailable(&scene), None);
         assert_eq!(with.unavailable(&Action::StreamlabsRecord), None);
@@ -1722,6 +1835,45 @@ mod tests {
                 })
                 .is_err()
         );
+    }
+
+    #[test]
+    fn a_test_run_plans_a_plugin_conditional_without_asking_the_plugin() {
+        let action: cooltek_sdk_service::Action = serde_json::from_value(serde_json::json!({
+            "type": "conditional",
+            "when": {"plugin": {"plugin": "com.x.y", "min_version": "1.0.0", "condition": "on", "value": true}},
+            "then": [{"type": "toggle_mute"}]
+        }))
+        .unwrap();
+        let abort = Arc::new(AtomicBool::new(false));
+        let without = Dispatcher::new(
+            false,
+            None,
+            Arc::clone(&abort),
+            None,
+            None,
+            Default::default(),
+            None,
+        );
+        assert_eq!(without.unavailable(&action), Some(PLUGIN_UNAVAILABLE));
+        let asked = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&asked);
+        let bridge = PluginBridge::new(Box::new(move |_| {
+            flag.store(true, Ordering::SeqCst);
+            Ok(())
+        }));
+        let mut with = Dispatcher::new(
+            false,
+            None,
+            abort,
+            None,
+            None,
+            Default::default(),
+            Some(bridge),
+        );
+        assert_eq!(with.unavailable(&action), None);
+        assert_eq!(with.dispatch_with_execution(&action, false), Ok(false));
+        assert!(!asked.load(Ordering::SeqCst), "a Test run asked a plugin");
     }
 
     #[test]
@@ -1755,6 +1907,7 @@ mod control_regressions {
             Some(ObsClient::new(endpoint, None)),
             None,
             Default::default(),
+            None,
         );
         mode.store(false, Ordering::SeqCst);
         let work = Work {
@@ -1779,6 +1932,7 @@ mod control_regressions {
                 },
                 dial_function: None,
                 coalesced: 1,
+                plugin_events: Vec::new(),
             }],
             report_count: 1,
             coalesced_parse_error_count: 0,
@@ -1786,6 +1940,8 @@ mod control_regressions {
             dropped_dial_function_count: 0,
             merge_barrier: false,
             variables: Vec::new(),
+            profile: 0,
+            module: cooltek_sdk_service::ServiceModule::M4315,
         };
         let mut output = Vec::new();
         process_work(

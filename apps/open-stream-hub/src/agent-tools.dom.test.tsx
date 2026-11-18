@@ -172,6 +172,15 @@ describe('the AI agents panel in the DOM', () => {
     expect(view.$('.agent-tools-step-codex').textContent).toContain('Not found in ~/.codex/config.toml');
   });
 
+  it('names the Claude Code settings file the app read, such as one in CLAUDE_CONFIG_DIR', async () => {
+    const { invoke } = fakeInvoke({ agent_tool_status: () => status(), agent_signals: () => signals({ claude_file: '~/.claude-work/settings.json' }) });
+    view = render(<AgentToolsPanel desktop invoke={invoke} copy={async () => true} />);
+    await settle();
+    expect(view.$('.agent-tools-step-claude').textContent).toContain('Not found in ~/.claude-work/settings.json');
+    expect(view.$('.agent-tools-claude').textContent).toContain('~/.claude-work/settings.json');
+    expect(view.$('.agent-tools-claude').textContent).not.toContain('~/.claude/settings.json');
+  });
+
   it('collapses to the ready line once both agents are configured and a prompt was answered', async () => {
     const { invoke } = fakeInvoke({ agent_tool_status: () => status(), agent_signals: () => signals({ claude: 'configured', codex: 'configured', answered: 2, last_answer_ms: 5 }) });
     view = render(<AgentToolsPanel desktop invoke={invoke} copy={async () => true} />);

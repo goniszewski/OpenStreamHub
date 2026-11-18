@@ -1,0 +1,50 @@
+{
+  "schema": 1,
+  "id": "com.github.goniszewski.claudecode",
+  "name": "Claude Code",
+  "version": "1.0.0",
+  "command": ["/usr/bin/python3", "plugin.py"],
+  "actions": [
+    {
+      "id": "session",
+      "label": "Session status",
+      "events": true,
+      "image": true,
+      "params": [
+        { "id": "project", "label": "Project (folder name, empty for any)", "type": "text" },
+        { "id": "answer", "label": "Answer permission prompts", "type": "bool", "default": false }
+      ]
+    },
+    {
+      "id": "context",
+      "label": "Context and cost",
+      "events": true,
+      "image": true,
+      "params": [
+        { "id": "project", "label": "Project (folder name, empty for any)", "type": "text" }
+      ]
+    }
+  ],
+  "conditions": [
+    {
+      "id": "state",
+      "label": "A Claude Code session is…",
+      "params": [
+        {
+          "id": "state",
+          "label": "State",
+          "type": "choice",
+          "default": "waiting",
+          "choices": [
+            { "id": "waiting", "label": "Waiting for you" },
+            { "id": "working", "label": "Working" },
+            { "id": "done", "label": "Done" },
+            { "id": "idle", "label": "Idle" }
+          ]
+        },
+        { "id": "project", "label": "Project (folder name, empty for any)", "type": "text" }
+      ]
+    }
+  ],
+  "permissions": { "network": [], "programs": true }
+}

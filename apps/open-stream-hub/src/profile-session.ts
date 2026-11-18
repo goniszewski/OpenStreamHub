@@ -24,7 +24,8 @@ export type Preview = { status: 'idle' } | { status: 'running' } | { status: 'fa
 export type KeypadPreview = { status: 'idle' } | { status: 'running' } | { status: 'failed'; error: string } | { status: 'completed'; result: KeypadPreviewResult };
 export type Validation = 'idle' | 'running' | 'valid' | 'failed';
 export interface PendingIntent { label: string; run: () => void }
-export interface ExportResult { path: string; bytes: number }
+// dropped_secrets: plugin secrets the profile still held, left out of the file.
+export interface ExportResult { path: string; bytes: number; dropped_secrets?: string[] }
 export interface RestorePrompt { key: string; name: string; changedOnDisk: boolean; draft: StoredDraft }
 
 export interface Draft {
@@ -677,11 +678,14 @@ export class ProfileSession {
       this.set({ importError: reason instanceof ImportError ? reason.message : `This file is not a valid profile: ${errorMessage(reason)}` });
       return;
     }
-    // The backend creates it: one that opens a terminal and runs a command, or answers AI agent prompts, is dry run
+    // The backend creates it: one that opens a terminal and runs a command, runs a program, or answers AI agent prompts, is dry run
     // only until the user reviews it and allows it to execute actions (import_flags::needs_review decides; this only
     // words the notice).
     const capabilities = profileCapabilities(profile);
     const reviewed = capabilities.terminalCommands.length > 0 ? 'It opens a terminal and runs a command'
+      : capabilities.programs.length > 0 ? 'It runs a program'
+      : capabilities.plugins.length > 0 ? 'It asks a plugin to act'
+      : capabilities.pluginChecks.length > 0 ? 'It asks a plugin to check something'
       : capabilities.answersAgentPrompts ? 'It answers AI agent permission prompts' : null;
     this.guard('import this profile', () => {
       void this.createProfile(() => profile, 'Importing profile', importName,

@@ -1,5 +1,6 @@
+use crate::plugin::PluginValue;
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 
 use crate::{DialDisplay, DialFunction, KeypadBinding, KeypadLayout, KeypadPage, KeypadTile};
 
@@ -99,69 +100,75 @@ pub enum Modifier {
     Shift,
 }
 
-/// Named non-character keys accepted by `shortcut` and `macro` and their macOS
-/// virtual key codes.
+/// Named non-character keys accepted by `shortcut` and `macro`: the stored,
+/// platform-free key vocabulary.
 ///
-/// The table is the allow-list: a key is either one ASCII alphanumeric byte or
-/// space (sent as a literal keystroke) or exactly one of these lowercase names
-/// (sent by integer key code). Codes are the Carbon `kVK_*` values from
-/// `HIToolbox/Events.h`; hardware behaviour is unverified. The keypad names
-/// cover the whole Apple extended keypad; F13–F20 are the last function keys
-/// macOS assigns virtual key codes (there are no `kVK_F21`–`kVK_F24`).
-pub(crate) const NAMED_KEYS: &[(&str, u8)] = &[
-    ("return", 36),
-    ("tab", 48),
-    ("space", 49),
-    ("delete", 51),
-    ("escape", 53),
-    ("forward_delete", 117),
-    ("home", 115),
-    ("end", 119),
-    ("page_up", 116),
-    ("page_down", 121),
-    ("arrow_left", 123),
-    ("arrow_right", 124),
-    ("arrow_down", 125),
-    ("arrow_up", 126),
-    ("f1", 122),
-    ("f2", 120),
-    ("f3", 99),
-    ("f4", 118),
-    ("f5", 96),
-    ("f6", 97),
-    ("f7", 98),
-    ("f8", 100),
-    ("f9", 101),
-    ("f10", 109),
-    ("f11", 103),
-    ("f12", 111),
-    ("f13", 105),
-    ("f14", 107),
-    ("f15", 113),
-    ("f16", 106),
-    ("f17", 64),
-    ("f18", 79),
-    ("f19", 80),
-    ("f20", 90),
-    ("keypad_0", 0x52),
-    ("keypad_1", 0x53),
-    ("keypad_2", 0x54),
-    ("keypad_3", 0x55),
-    ("keypad_4", 0x56),
-    ("keypad_5", 0x57),
-    ("keypad_6", 0x58),
-    ("keypad_7", 0x59),
-    ("keypad_8", 0x5B),
-    ("keypad_9", 0x5C),
-    ("keypad_decimal", 0x41),
-    ("keypad_multiply", 0x43),
-    ("keypad_plus", 0x45),
-    ("keypad_clear", 0x47),
-    ("keypad_divide", 0x4B),
-    ("keypad_enter", 0x4C),
-    ("keypad_minus", 0x4E),
-    ("keypad_equals", 0x51),
+/// The list is the allow-list: a key is either one ASCII alphanumeric byte or
+/// space (sent as a literal keystroke) or exactly one of these lowercase names.
+/// The names describe keys, not any operating system's codes; each host maps
+/// them to its own key codes (macOS: `macos::keys`), and a test there checks
+/// that its table covers exactly this list, in this order. The keypad names
+/// cover the whole Apple extended keypad; F20 is the last function key because
+/// macOS assigns no virtual key codes past it.
+pub(crate) const KEY_NAMES: &[&str] = &[
+    "return",
+    "tab",
+    "space",
+    "delete",
+    "escape",
+    "forward_delete",
+    "home",
+    "end",
+    "page_up",
+    "page_down",
+    "arrow_left",
+    "arrow_right",
+    "arrow_down",
+    "arrow_up",
+    "f1",
+    "f2",
+    "f3",
+    "f4",
+    "f5",
+    "f6",
+    "f7",
+    "f8",
+    "f9",
+    "f10",
+    "f11",
+    "f12",
+    "f13",
+    "f14",
+    "f15",
+    "f16",
+    "f17",
+    "f18",
+    "f19",
+    "f20",
+    "keypad_0",
+    "keypad_1",
+    "keypad_2",
+    "keypad_3",
+    "keypad_4",
+    "keypad_5",
+    "keypad_6",
+    "keypad_7",
+    "keypad_8",
+    "keypad_9",
+    "keypad_decimal",
+    "keypad_multiply",
+    "keypad_plus",
+    "keypad_clear",
+    "keypad_divide",
+    "keypad_enter",
+    "keypad_minus",
+    "keypad_equals",
 ];
+
+/// True for an allow-listed named key (see [`KEY_NAMES`]).
+pub(crate) fn is_named_key(name: &str) -> bool {
+    KEY_NAMES.contains(&name)
+}
 
 /// Hardware media keys a `shortcut` can send, and the transport command each
 /// one posts. macOS has no virtual key codes for them: they are posted as
@@ -183,93 +190,10 @@ pub(crate) fn media_key_command(name: &str) -> Option<MediaCommand> {
         .map(|(_, command)| *command)
 }
 
-/// The fixed ANSI virtual key codes of the literal keys (`a`–`z`, `0`–`9`,
-/// space), from `HIToolbox/Events.h`. A Dvorak or other alternative layout
-/// prints different characters at these codes, like every key-code table here.
-const LITERAL_CODES: &[(u8, u8)] = &[
-    (b'a', 0x00),
-    (b'b', 0x0B),
-    (b'c', 0x08),
-    (b'd', 0x02),
-    (b'e', 0x0E),
-    (b'f', 0x03),
-    (b'g', 0x05),
-    (b'h', 0x04),
-    (b'i', 0x22),
-    (b'j', 0x26),
-    (b'k', 0x28),
-    (b'l', 0x25),
-    (b'm', 0x2E),
-    (b'n', 0x2D),
-    (b'o', 0x1F),
-    (b'p', 0x23),
-    (b'q', 0x0C),
-    (b'r', 0x0F),
-    (b's', 0x01),
-    (b't', 0x11),
-    (b'u', 0x20),
-    (b'v', 0x09),
-    (b'w', 0x0D),
-    (b'x', 0x07),
-    (b'y', 0x10),
-    (b'z', 0x06),
-    (b'0', 0x1D),
-    (b'1', 0x12),
-    (b'2', 0x13),
-    (b'3', 0x14),
-    (b'4', 0x15),
-    (b'5', 0x17),
-    (b'6', 0x16),
-    (b'7', 0x1A),
-    (b'8', 0x1C),
-    (b'9', 0x19),
-    (b' ', 0x31),
-];
-
 /// True for the keys that pass `shortcut` and `macro` validation as a single
 /// literal: one ASCII alphanumeric byte or space.
 pub(crate) fn is_literal_key(key: &str) -> bool {
     key.len() == 1 && (key.as_bytes()[0].is_ascii_alphanumeric() || key.as_bytes()[0] == b' ')
-}
-
-/// Returns the macOS virtual key code of an allow-listed named key.
-pub(crate) fn named_key_code(name: &str) -> Option<u8> {
-    NAMED_KEYS
-        .iter()
-        .find(|(candidate, _)| *candidate == name)
-        .map(|(_, code)| *code)
-}
-
-/// Returns the macOS virtual key code of any `shortcut` or `macro` key: the
-/// fixed ANSI code of a literal (an upper-case letter is the same physical
-/// key), or the code of an allow-listed named key. Media keys have no virtual
-/// key code and return `None`. The macro replay and the recorder both key off
-/// this table, so a recording and its replay name the same physical keys.
-pub fn virtual_key_code(key: &str) -> Option<u8> {
-    if let [byte] = key.as_bytes() {
-        let lowered = byte.to_ascii_lowercase();
-        if let Some((_, code)) = LITERAL_CODES.iter().find(|(letter, _)| *letter == lowered) {
-            return Some(*code);
-        }
-    }
-    named_key_code(key)
-}
-
-/// Returns the key name of a macOS virtual key code: the inverse of
-/// [`virtual_key_code`] for the keys a recording can hold. Letters, digits and
-/// space come back as the literal character, so a recorded macro reads like
-/// the keys it replays; media keys and unknown codes return `None`.
-pub fn key_for_virtual_code(code: u8) -> Option<String> {
-    if let Some((letter, _)) = LITERAL_CODES
-        .iter()
-        .find(|(_, candidate)| *candidate == code)
-    {
-        return Some((*letter as char).to_string());
-    }
-    NAMED_KEYS
-        .iter()
-        .find(|(_, candidate)| *candidate == code)
-        .map(|(name, _)| (*name).to_string())
 }
 
 /// A media transport command, matching the official `media-track-control` options.
@@ -757,6 +681,28 @@ pub enum Condition {
         /// The lowest accepted number.
         value: i32,
     },
+    /// A plugin answers this condition of its own `true` or `false` when the
+    /// key is pressed, and the test holds when the answer is `value`. Written
+    /// with the fields of an [`Action::Plugin`], `condition` for `action`.
+    /// Asked in Live runs only; an answer that cannot be had fails the press.
+    Plugin {
+        /// The plugin's reverse-DNS id, such as `com.example.lights`.
+        plugin: String,
+        /// The oldest plugin version this condition works with, `MAJOR.MINOR.PATCH`.
+        min_version: String,
+        /// The id of the condition in the plugin's manifest.
+        condition: String,
+        /// Parameter values by name; the app checks them against the manifest.
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        params: BTreeMap<String, PluginValue>,
+        /// The text parameters whose `{{name}}` references to declared
+        /// variables are filled in when the key is pressed, as for a plugin
+        /// action.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        variables: Vec<String>,
+        /// The answer the test holds for.
+        value: bool,
+    },
     /// Every listed condition holds (AND). All of them are read, in order.
     All(Vec<Condition>),
     /// At least one listed condition holds (OR). All of them are read, in
@@ -787,6 +733,7 @@ impl Condition {
             Self::FocusedApp(_) => "focused_app",
             Self::VariableIs { .. } => "variable_is",
             Self::VariableAtLeast { .. } => "variable_at_least",
+            Self::Plugin { .. } => "plugin",
             Self::All(_) => "all",
             Self::Any(_) => "any",
         }
@@ -805,7 +752,42 @@ impl Condition {
             | Self::TimerRunning(_)
             | Self::FocusedApp(_)
             | Self::VariableIs { .. }
-            | Self::VariableAtLeast { .. } => false,
+            | Self::VariableAtLeast { .. }
+            | Self::Plugin { .. } => false,
+        }
+    }
+
+    /// Adds the plugin conditions in this condition, in reading order, to `uses`.
+    pub fn plugin_uses<'a>(&'a self, uses: &mut Vec<crate::plugin::PluginUse<'a>>) {
+        match self {
+            Self::Plugin {
+                plugin,
+                min_version,
+                condition,
+                params,
+                variables,
+                ..
+            } => uses.push(crate::plugin::PluginUse {
+                kind: crate::plugin::PluginUseKind::Condition,
+                plugin,
+                min_version,
+                id: condition,
+                params,
+                variables,
+            }),
+            Self::All(items) | Self::Any(items) => {
+                items.iter().for_each(|item| item.plugin_uses(uses));
+            }
+            _ => {}
+        }
+    }
+
+    /// Whether a plugin is asked for this condition or one inside it.
+    pub fn uses_plugins(&self) -> bool {
+        match self {
+            Self::Plugin { .. } => true,
+            Self::All(items) | Self::Any(items) => items.iter().any(Self::uses_plugins),
+            _ => false,
         }
     }
 
@@ -823,6 +805,7 @@ impl Condition {
             | Self::FocusedApp(_)
             | Self::VariableIs { .. }
             | Self::VariableAtLeast { .. }
+            | Self::Plugin { .. }
             | Self::All(_)
             | Self::Any(_) => None,
         }
@@ -857,6 +840,12 @@ impl Condition {
                 } else {
                     Err(format!("variable {name} is {}, not number", kind.name()))
                 }
+            }
+            Self::Plugin { .. } => {
+                let mut uses = Vec::new();
+                self.plugin_uses(&mut uses);
+                uses.iter()
+                    .try_for_each(|used| used.check_variables(declared))
             }
             Self::All(items) | Self::Any(items) => items
                 .iter()
@@ -940,6 +929,20 @@ impl Condition {
                 validate_variable_name(name)?;
                 validate_variable_number(*value)
             }
+            Self::Plugin {
+                plugin,
+                min_version,
+                condition,
+                params,
+                variables,
+                ..
+            } => crate::plugin::validate_plugin_condition(
+                plugin,
+                min_version,
+                condition,
+                params,
+                variables,
+            ),
             Self::All(items) | Self::Any(items) => {
                 let name = self.name();
                 if depth >= Self::MAX_DEPTH {
@@ -1029,6 +1032,48 @@ pub enum Action {
         /// with the command's limits.
         #[serde(skip_serializing_if = "Option::is_none")]
         directory: Option<String>,
+    },
+    /// Run one executable directly, without a shell or a terminal window, and
+    /// wait for it to exit. Allowed as a `multi_action` or `conditional` step.
+    RunProgram {
+        /// The executable: an absolute path or one starting with `~/`, with the
+        /// [`Action::MAX_RUN_PROGRAM_BYTES`] one-line rules.
+        program: String,
+        /// Arguments passed as they are (nothing expands or splits them): at
+        /// most [`Action::MAX_RUN_PROGRAM_ARGS`], each one line without control
+        /// or invisible characters, empty allowed.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        args: Vec<String>,
+        /// Directory to start in, with the `terminal_command` directory rules;
+        /// the home folder when absent.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        directory: Option<String>,
+        /// Fill in `{{name}}` references to declared variables in the arguments
+        /// when the key is pressed (see [`fill_in_run_program_args`]). Off by
+        /// default, so `{{` is plain text; `program` and `directory` are never
+        /// filled in.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        variables: bool,
+    },
+    /// Ask a plugin, a separate program the OpenStreamHub app runs, to perform
+    /// one of its actions, and wait for its answer. Allowed as a
+    /// `multi_action` or `conditional` step.
+    Plugin {
+        /// The plugin's reverse-DNS id, such as `com.example.homeassistant`.
+        plugin: String,
+        /// The oldest plugin version this action works with, `MAJOR.MINOR.PATCH`.
+        min_version: String,
+        /// The id of the action in the plugin's manifest.
+        action: String,
+        /// Parameter values by name; the app checks them against the manifest.
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        params: BTreeMap<String, PluginValue>,
+        /// The text parameters whose `{{name}}` references to declared
+        /// variables are filled in when the key is pressed (see
+        /// [`crate::plugin::fill_in_plugin_params`]). Only parameters the
+        /// manifest allows it for.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        variables: Vec<String>,
     },
     /// Send a media transport command: a hardware media key on macOS for
     /// play/pause, next and previous; `stop` reaches only an already running
@@ -1346,23 +1391,131 @@ pub fn is_invisible_text_character(c: char) -> bool {
 /// bytes on one line, without control (newline and tab included) or invisible
 /// characters, so what runs is exactly the line that was reviewed.
 fn validate_terminal_line(field: &str, value: &str) -> Result<(), String> {
-    if value.is_empty() || value.len() > Action::MAX_TERMINAL_COMMAND_BYTES {
-        return Err(format!(
-            "terminal_command {field} must be 1 to {} bytes",
-            Action::MAX_TERMINAL_COMMAND_BYTES
-        ));
+    validate_one_line("terminal_command", field, value, 1)
+}
+
+/// The one-line rules shared by `terminal_command` and `run_program` fields:
+/// `min` to 512 bytes, no control (newline and tab included) or invisible
+/// characters.
+fn validate_one_line(action: &str, field: &str, value: &str, min: usize) -> Result<(), String> {
+    const MAX: usize = Action::MAX_TERMINAL_COMMAND_BYTES;
+    if value.len() < min || value.len() > MAX {
+        return Err(format!("{action} {field} must be {min} to {MAX} bytes"));
     }
     if value.chars().any(char::is_control) {
         return Err(format!(
-            "terminal_command {field} must be one line without control characters"
+            "{action} {field} must be one line without control characters"
         ));
     }
     if value.chars().any(is_invisible_text_character) {
         return Err(format!(
-            "terminal_command {field} must not contain invisible format or line/paragraph separator characters"
+            "{action} {field} must not contain invisible format or line/paragraph separator characters"
         ));
     }
     Ok(())
+}
+
+/// Whether `path` is `~`, absolute, or starts with `~/`.
+fn is_home_or_absolute(path: &str) -> bool {
+    path == "~" || path.starts_with('/') || path.starts_with("~/")
+}
+
+/// The variable names a text with variables on refers to, in order, repeats
+/// included. Every `{{` must begin a reference `{{name}}` with a valid variable
+/// name and no spaces; there is no escape for a literal `{{` (leave variables
+/// off instead).
+pub fn variable_references(text: &str) -> Result<Vec<&str>, String> {
+    Ok(reference_spans(text)?
+        .into_iter()
+        .map(|(_, name)| name)
+        .collect())
+}
+
+/// Each reference of `text` as the byte range of the whole `{{name}}` and the
+/// name, in order (see [`variable_references`]).
+fn reference_spans(text: &str) -> Result<Vec<(std::ops::Range<usize>, &str)>, String> {
+    let mut spans = Vec::new();
+    let mut from = 0;
+    while let Some(found) = text[from..].find("{{") {
+        let start = from + found;
+        let name_start = start + 2;
+        let name = text[name_start..]
+            .find("}}")
+            .map(|end| &text[name_start..name_start + end])
+            .filter(|name| validate_variable_name(name).is_ok())
+            .ok_or("every {{ must begin a variable reference such as {{name}}, with a variable name and no spaces")?;
+        from = name_start + name.len() + 2;
+        spans.push((start..from, name));
+    }
+    Ok(spans)
+}
+
+/// A variable value as it is filled into text: text as it is, a number in
+/// decimal, a bool as `true` or `false`.
+fn filled_in(value: &VariableValue) -> String {
+    match value {
+        VariableValue::Bool(on) => on.to_string(),
+        VariableValue::Number(number) => number.to_string(),
+        VariableValue::Text(text) => text.clone(),
+    }
+}
+
+/// Replaces each `{{name}}` in `text` (see [`variable_references`]) by the
+/// value `lookup` gives for it.
+pub(crate) fn fill_in(
+    text: &str,
+    lookup: &impl Fn(&str) -> Option<VariableValue>,
+) -> Result<String, String> {
+    let mut filled = String::with_capacity(text.len());
+    let mut copied = 0;
+    for (span, name) in reference_spans(text)? {
+        let value = lookup(name).ok_or_else(|| format!("variable {name} is not declared"))?;
+        filled.push_str(&text[copied..span.start]);
+        filled.push_str(&filled_in(&value));
+        copied = span.end;
+    }
+    filled.push_str(&text[copied..]);
+    Ok(filled)
+}
+
+/// The arguments of a `run_program` with variables on, filled in from
+/// `lookup` when its key is pressed. Fails closed, so nothing runs, when a
+/// filled-in argument breaks the one-line rules or the argument limits, or
+/// starts with `-` although the written argument does not (so a value set from
+/// outside the deck cannot become an option such as `--delete`; write
+/// `--name={{name}}` for a value that may start with `-`). Errors name the
+/// argument's position only, never a value.
+pub fn fill_in_run_program_args(
+    args: &[String],
+    lookup: impl Fn(&str) -> Option<VariableValue>,
+) -> Result<Vec<String>, String> {
+    let filled = args
+        .iter()
+        .enumerate()
+        .map(|(index, arg)| {
+            let number = index + 1;
+            let filled = fill_in(arg, &lookup).map_err(|error| format!("argument {number}: {error}"))?;
+            if validate_one_line("run_program", "argument", &filled, 0).is_err() {
+                return Err(format!(
+                    "argument {number} with its variables filled in is not one line of at most {} bytes without control or invisible characters",
+                    Action::MAX_RUN_PROGRAM_BYTES
+                ));
+            }
+            if filled.starts_with('-') && !arg.starts_with('-') {
+                return Err(format!(
+                    "argument {number} would start with - from a variable's value; write it as --option={{{{name}}}} instead"
+                ));
+            }
+            Ok(filled)
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    if filled.iter().map(String::len).sum::<usize>() > Action::MAX_RUN_PROGRAM_ARGS_BYTES {
+        return Err(format!(
+            "the arguments with their variables filled in total more than {} bytes",
+            Action::MAX_RUN_PROGRAM_ARGS_BYTES
+        ));
+    }
+    Ok(filled)
 }
 
 fn validate_url(url: &str) -> Result<(), String> {
@@ -1500,6 +1653,24 @@ impl<'de> Deserialize<'de> for Action {
                 command: String,
                 #[serde(default, deserialize_with = "present")]
                 directory: Option<String>,
+            },
+            RunProgram {
+                program: String,
+                #[serde(default)]
+                args: Vec<String>,
+                #[serde(default, deserialize_with = "present")]
+                directory: Option<String>,
+                #[serde(default)]
+                variables: bool,
+            },
+            Plugin {
+                plugin: String,
+                min_version: String,
+                action: String,
+                #[serde(default)]
+                params: BTreeMap<String, PluginValue>,
+                #[serde(default)]
+                variables: Vec<String>,
             },
             Media {
                 command: MediaCommand,
@@ -1643,6 +1814,30 @@ impl<'de> Deserialize<'de> for Action {
                 command,
                 directory,
             },
+            Shape::RunProgram {
+                program,
+                args,
+                directory,
+                variables,
+            } => Self::RunProgram {
+                program,
+                args,
+                directory,
+                variables,
+            },
+            Shape::Plugin {
+                plugin,
+                min_version,
+                action,
+                params,
+                variables,
+            } => Self::Plugin {
+                plugin,
+                min_version,
+                action,
+                params,
+                variables,
+            },
             Shape::Media { command } => Self::Media { command },
             Shape::System { command } => Self::System { command },
             Shape::Text { text, press_enter } => Self::Text { text, press_enter },
@@ -1715,6 +1910,12 @@ impl Action {
     pub const MAX_URL_BYTES: usize = 2048;
     /// Maximum `terminal_command` command and directory length in UTF-8 bytes.
     pub const MAX_TERMINAL_COMMAND_BYTES: usize = 512;
+    /// Maximum `run_program` program, directory and single-argument length in UTF-8 bytes.
+    pub const MAX_RUN_PROGRAM_BYTES: usize = Self::MAX_TERMINAL_COMMAND_BYTES;
+    /// Maximum number of `run_program` arguments.
+    pub const MAX_RUN_PROGRAM_ARGS: usize = 32;
+    /// Maximum total UTF-8 bytes of all `run_program` arguments.
+    pub const MAX_RUN_PROGRAM_ARGS_BYTES: usize = 4096;
     /// Maximum `text` snippet length in UTF-8 bytes.
     pub const MAX_TEXT_BYTES: usize = 2048;
     /// Minimum number of `multi_action` steps.
@@ -1758,6 +1959,8 @@ impl Action {
             Self::LaunchApp { .. } => "launch_app",
             Self::OpenUrl { .. } => "open_url",
             Self::TerminalCommand { .. } => "terminal_command",
+            Self::RunProgram { .. } => "run_program",
+            Self::Plugin { .. } => "plugin",
             Self::Media { .. } => "media",
             Self::System { .. } => "system",
             Self::Text { .. } => "text",
@@ -1840,6 +2043,65 @@ impl Action {
         }
     }
 
+    /// True for a `plugin` action, or a `multi_action` or `conditional` with
+    /// a plugin step, or a `conditional` that asks a plugin condition.
+    pub fn uses_plugins(&self) -> bool {
+        match self {
+            Self::Plugin { .. } => true,
+            Self::Conditional {
+                when,
+                then,
+                otherwise,
+            } => when.uses_plugins() || then.iter().chain(otherwise).any(Self::uses_plugins),
+            Self::MultiAction { actions } => actions.iter().any(Self::uses_plugins),
+            _ => false,
+        }
+    }
+
+    /// Every plugin action and plugin condition in this action, its steps and
+    /// its conditions, in the order they appear: a `conditional`'s condition,
+    /// then its `then` steps, then its `else` steps.
+    pub fn plugin_uses(&self) -> Vec<crate::plugin::PluginUse<'_>> {
+        let mut uses = Vec::new();
+        self.collect_plugin_uses(&mut uses);
+        uses
+    }
+
+    fn collect_plugin_uses<'a>(&'a self, uses: &mut Vec<crate::plugin::PluginUse<'a>>) {
+        match self {
+            Self::Plugin {
+                plugin,
+                min_version,
+                action,
+                params,
+                variables,
+            } => uses.push(crate::plugin::PluginUse {
+                kind: crate::plugin::PluginUseKind::Action,
+                plugin,
+                min_version,
+                id: action,
+                params,
+                variables,
+            }),
+            Self::Conditional {
+                when,
+                then,
+                otherwise,
+            } => {
+                when.plugin_uses(uses);
+                for step in then.iter().chain(otherwise) {
+                    step.collect_plugin_uses(uses);
+                }
+            }
+            Self::MultiAction { actions } => {
+                for step in actions {
+                    step.collect_plugin_uses(uses);
+                }
+            }
+            _ => {}
+        }
+    }
+
     /// True for a Streamlabs action (`streamlabs_*`), or a `multi_action` or
     /// `conditional` with a Streamlabs step. No condition reads Streamlabs.
     pub fn uses_streamlabs(&self) -> bool {
@@ -1877,7 +2139,7 @@ impl Action {
                     }
                     return Ok(());
                 }
-                if !is_literal_key(key) && named_key_code(key).is_none() {
+                if !is_literal_key(key) && !is_named_key(key) {
                     return Err(
                         "shortcut key must be one ASCII alphanumeric key, space, or a supported named key"
                             .into(),
@@ -1901,7 +2163,7 @@ impl Action {
                 }
                 let mut total_ms = 0u64;
                 for (index, step) in steps.iter().enumerate() {
-                    if !is_literal_key(&step.key) && named_key_code(&step.key).is_none() {
+                    if !is_literal_key(&step.key) && !is_named_key(&step.key) {
                         if media_key_command(&step.key).is_some() {
                             return Err(format!(
                                 "macro step {}: media keys cannot be macro keys; the media action sends them",
@@ -1958,10 +2220,7 @@ impl Action {
                 }
                 if let Some(directory) = directory {
                     validate_terminal_line("directory", directory)?;
-                    if !(directory == "~"
-                        || directory.starts_with('/')
-                        || directory.starts_with("~/"))
-                    {
+                    if !is_home_or_absolute(directory) {
                         return Err(
                             "terminal_command directory must be ~ or start with / or ~/".into()
                         );
@@ -1969,6 +2228,61 @@ impl Action {
                 }
                 Ok(())
             }
+            Self::RunProgram {
+                program,
+                args,
+                directory,
+                variables,
+            } => {
+                const NAME: &str = "run_program";
+                validate_one_line(NAME, "program", program, 1)?;
+                if !(program.starts_with('/') || program.starts_with("~/"))
+                    || program.ends_with('/')
+                {
+                    return Err(
+                        "run_program program must be a file path starting with / or ~/".into(),
+                    );
+                }
+                if args.len() > Self::MAX_RUN_PROGRAM_ARGS {
+                    return Err(format!(
+                        "run_program takes at most {} arguments",
+                        Self::MAX_RUN_PROGRAM_ARGS
+                    ));
+                }
+                for (index, arg) in args.iter().enumerate() {
+                    validate_one_line(NAME, &format!("argument {}", index + 1), arg, 0)?;
+                    if *variables {
+                        variable_references(arg)
+                            .map_err(|error| format!("{NAME} argument {}: {error}", index + 1))?;
+                    }
+                }
+                if args.iter().map(String::len).sum::<usize>() > Self::MAX_RUN_PROGRAM_ARGS_BYTES {
+                    return Err(format!(
+                        "run_program arguments must total at most {} bytes",
+                        Self::MAX_RUN_PROGRAM_ARGS_BYTES
+                    ));
+                }
+                if let Some(directory) = directory {
+                    validate_one_line(NAME, "directory", directory, 1)?;
+                    if !is_home_or_absolute(directory) {
+                        return Err("run_program directory must be ~ or start with / or ~/".into());
+                    }
+                }
+                Ok(())
+            }
+            Self::Plugin {
+                plugin,
+                min_version,
+                action,
+                params,
+                variables,
+            } => crate::plugin::validate_plugin_action(
+                plugin,
+                min_version,
+                action,
+                params,
+                variables,
+            ),
             Self::ObsScene { scene } => validate_obs_name("obs_scene", "scene", scene),
             Self::ObsSceneCollection { name } => {
                 validate_obs_name("obs_scene_collection", "name", name)
@@ -2149,6 +2463,24 @@ impl Action {
             Self::SetVariable { name, value } => expect(name, value.kind()),
             Self::ToggleVariable { name } => expect(name, VariableKind::Bool),
             Self::AddToVariable { name, .. } => expect(name, VariableKind::Number),
+            // Any kind can be filled in; validate has checked the references.
+            Self::RunProgram {
+                args,
+                variables: true,
+                ..
+            } => args.iter().enumerate().try_for_each(|(index, arg)| {
+                variable_references(arg)
+                    .and_then(|names| {
+                        names
+                            .into_iter()
+                            .try_for_each(|name| kind_of(name).map(drop))
+                    })
+                    .map_err(|error| format!("run_program argument {}: {error}", index + 1))
+            }),
+            Self::Plugin { .. } => self
+                .plugin_uses()
+                .iter()
+                .try_for_each(|used| used.check_variables(declared)),
             Self::MultiAction { actions } => actions
                 .iter()
                 .try_for_each(|step| step.check_variables(declared)),
@@ -4726,7 +5058,7 @@ mod tests {
 
     #[test]
     fn shortcut_named_keys_are_an_exact_allow_list() {
-        for (name, _) in NAMED_KEYS {
+        for name in KEY_NAMES {
             assert!(
                 key(
                     name,
@@ -4742,16 +5074,14 @@ mod tests {
                 "{name}"
             );
         }
-        assert_eq!(NAMED_KEYS.len(), 52);
-        let mut codes: Vec<_> = NAMED_KEYS.iter().map(|(_, code)| *code).collect();
-        codes.sort_unstable();
-        codes.dedup();
-        assert_eq!(codes.len(), NAMED_KEYS.len(), "key codes must be distinct");
-        // Media keys are shortcut keys without codes, checked separately.
+        assert_eq!(KEY_NAMES.len(), 52);
+        let unique: HashSet<_> = KEY_NAMES.iter().collect();
+        assert_eq!(unique.len(), KEY_NAMES.len(), "key names must be distinct");
+        // Media keys are shortcut keys outside the named list, checked separately.
         assert_eq!(MEDIA_KEYS.len(), 3);
         for name in ["play_pause", "next_track", "previous_track"] {
             assert!(key(name, vec![]).validate().is_ok(), "{name}");
-            assert!(named_key_code(name).is_none(), "{name} has no key code");
+            assert!(!is_named_key(name), "{name} is not a named key");
             assert!(key(name, vec![Modifier::Command]).validate().is_err());
         }
         for invalid in [
@@ -4796,40 +5126,6 @@ mod tests {
     }
 
     #[test]
-    fn virtual_key_codes_round_trip_and_cover_every_macro_key() {
-        // Every literal and named key has a code, and the code reads back as
-        // the same physical key (upper case is the same key as lower case).
-        for name in ["a", "z", "A", "0", "9", " "] {
-            let code = virtual_key_code(name).unwrap();
-            assert_eq!(
-                key_for_virtual_code(code).as_deref(),
-                Some(name.to_lowercase().as_str()),
-                "{name}"
-            );
-        }
-        for (name, _) in NAMED_KEYS {
-            let code = virtual_key_code(name).unwrap();
-            // Code 49 is both the literal space and the named `space` key; the
-            // inverse reads it back as the literal, which validates the same.
-            if *name == "space" {
-                assert_eq!(code, virtual_key_code(" ").unwrap());
-                assert_eq!(key_for_virtual_code(code).as_deref(), Some(" "));
-            } else {
-                assert_eq!(key_for_virtual_code(code).as_deref(), Some(*name), "{name}");
-            }
-        }
-        assert!(virtual_key_code("play_pause").is_none());
-        // Codes outside the table (the = and ` keys are not macro keys) read
-        // back as nothing.
-        assert!(key_for_virtual_code(0x18).is_none());
-        assert!(key_for_virtual_code(0x32).is_none());
-        // A few fixed anchor codes from HIToolbox/Events.h.
-        assert_eq!(virtual_key_code("c"), Some(0x08));
-        assert_eq!(virtual_key_code("5"), Some(0x17));
-        assert_eq!(virtual_key_code("keypad_enter"), Some(0x4C));
-    }
-
-    #[test]
     fn macros_are_bounded_sequences_of_known_keys() {
         assert!(
             macro_action(vec![macro_step("c", vec![Modifier::Command], 0, 80)])
@@ -4837,7 +5133,7 @@ mod tests {
                 .is_ok()
         );
         // Every named key and every literal is a macro key; media keys are not.
-        for (name, _) in NAMED_KEYS {
+        for name in KEY_NAMES {
             assert!(
                 macro_action(vec![macro_step(name, vec![], 0, 0)])
                     .validate()
@@ -5151,10 +5447,7 @@ mod tests {
             .iter()
             .map(|name| name.as_str().unwrap())
             .collect();
-        assert_eq!(
-            names,
-            NAMED_KEYS.iter().map(|(name, _)| *name).collect::<Vec<_>>()
-        );
+        assert_eq!(names, KEY_NAMES.to_vec());
         assert_eq!(
             fixture["timer_sounds"],
             serde_json::to_value(TimerSound::ALL).unwrap()
@@ -5257,6 +5550,289 @@ mod tests {
         ] {
             assert!(parse(json).is_err(), "{json}");
         }
+    }
+
+    #[test]
+    fn run_program_variables_are_opt_in_and_checked_when_the_profile_loads() {
+        let parse = |json: &str| -> Result<Action, String> {
+            serde_json::from_str::<Action>(json).map_err(|error| error.to_string())
+        };
+        // Off by default and not written when off, so {{ stays plain text.
+        let plain = parse(r#"{"type":"run_program","program":"/a","args":["{{ nope"]}"#).unwrap();
+        assert!(matches!(
+            plain,
+            Action::RunProgram {
+                variables: false,
+                ..
+            }
+        ));
+        plain.validate().unwrap();
+        assert!(!serde_json::to_string(&plain).unwrap().contains("variables"));
+        assert_eq!(
+            parse(r#"{"type":"run_program","program":"/a","args":["{{ nope"],"variables":false}"#)
+                .unwrap(),
+            plain
+        );
+        let on = parse(
+            r#"{"type":"run_program","program":"/a","args":["--scene={{scene}}","{{takes}}{{live}}"],"variables":true}"#,
+        )
+        .unwrap();
+        on.validate().unwrap();
+        assert_eq!(parse(&serde_json::to_string(&on).unwrap()).unwrap(), on);
+        assert!(parse(r#"{"type":"run_program","program":"/a","variables":"yes"}"#).is_err());
+        for broken in [
+            "{{",
+            "{{scene",
+            "{{ scene }}",
+            "{{Scene}}",
+            "{{}}",
+            "{{1x}}",
+            "a {{b}} {{",
+            "{{{scene}}}",
+        ] {
+            let action = Action::RunProgram {
+                program: "/a".into(),
+                args: vec!["ok".into(), broken.into()],
+                directory: None,
+                variables: true,
+            };
+            let error = action.validate().unwrap_err();
+            assert!(
+                error.starts_with("run_program argument 2: every {{"),
+                "{broken}: {error}"
+            );
+        }
+        // Every name must be declared; any kind can be filled in.
+        let declared: Vec<Variable> = serde_json::from_str(
+            r#"[{"name":"takes","value":0},{"name":"live","value":false},{"name":"scene","value":"intro"}]"#,
+        )
+        .unwrap();
+        on.check_variables(&declared).unwrap();
+        let missing =
+            parse(r#"{"type":"run_program","program":"/a","args":["{{gone}}"],"variables":true}"#)
+                .unwrap();
+        assert_eq!(
+            missing.check_variables(&declared).unwrap_err(),
+            "run_program argument 1: variable gone is not declared"
+        );
+        let step = Action::MultiAction {
+            actions: vec![missing.clone(), Action::ToggleMute],
+        };
+        assert!(step.check_variables(&declared).is_err());
+        // Called on its own, a malformed reference still names its argument.
+        let malformed = Action::RunProgram {
+            program: "/a".into(),
+            args: vec!["ok".into(), "{{ x }}".into()],
+            directory: None,
+            variables: true,
+        };
+        assert!(
+            malformed
+                .check_variables(&declared)
+                .unwrap_err()
+                .starts_with("run_program argument 2: every {{")
+        );
+        // With variables off nothing is a reference.
+        let off = parse(r#"{"type":"run_program","program":"/a","args":["{{gone}}"]}"#).unwrap();
+        off.check_variables(&declared).unwrap();
+        assert_eq!(
+            variable_references("{{a}}-{{b_2}}{{a}}").unwrap(),
+            ["a", "b_2", "a"]
+        );
+        assert_eq!(
+            variable_references("}} plain {").unwrap(),
+            Vec::<&str>::new()
+        );
+    }
+
+    #[test]
+    fn run_program_arguments_are_filled_in_and_checked_again_when_pressed() {
+        let values = |name: &str| match name {
+            "scene" => Some(VariableValue::Text("on air".into())),
+            "takes" => Some(VariableValue::Number(-3)),
+            "live" => Some(VariableValue::Bool(true)),
+            "dash" => Some(VariableValue::Text("--delete".into())),
+            "hidden" => Some(VariableValue::Text("a\u{200B}b".into())),
+            "empty" => Some(VariableValue::Text(String::new())),
+            "long" => Some(VariableValue::Text("x".repeat(64))),
+            _ => None,
+        };
+        let fill = |args: &[&str]| {
+            fill_in_run_program_args(
+                &args
+                    .iter()
+                    .map(|arg| (*arg).to_string())
+                    .collect::<Vec<_>>(),
+                values,
+            )
+        };
+        // One value stays one argument, with spaces; numbers and bools as text.
+        assert_eq!(
+            fill(&[
+                "--scene={{scene}}",
+                "{{scene}}",
+                "n={{takes}}/{{live}}",
+                "{{empty}}",
+                "plain"
+            ])
+            .unwrap(),
+            ["--scene=on air", "on air", "n=-3/true", "", "plain"]
+        );
+        // A value cannot turn an argument into an option; a written - can.
+        assert!(
+            fill(&["{{dash}}"])
+                .unwrap_err()
+                .contains("argument 1 would start with -")
+        );
+        assert!(
+            fill(&["x", "{{takes}}"])
+                .unwrap_err()
+                .contains("argument 2 would start with -")
+        );
+        assert!(fill(&["{{empty}}{{dash}}"]).is_err());
+        assert_eq!(
+            fill(&["--name={{dash}}", "-{{dash}}"]).unwrap(),
+            ["--name=--delete", "---delete"]
+        );
+        // Invisible characters and over-long results fail closed, naming only the position.
+        let error = fill(&["{{hidden}}"]).unwrap_err();
+        assert!(
+            error.starts_with("argument 1 with its variables filled in is not one line"),
+            "{error}"
+        );
+        assert!(!error.contains('\u{200B}'), "{error}");
+        let nine = ["{{long}}{{long}}{{long}}{{long}}{{long}}{{long}}{{long}}{{long}}{{long}}"];
+        assert!(
+            fill(&nine)
+                .unwrap_err()
+                .contains("argument 1 with its variables filled in")
+        );
+        let many = vec!["{{long}}{{long}}{{long}}{{long}}{{long}}{{long}}{{long}}"; 10];
+        assert!(
+            fill(&many)
+                .unwrap_err()
+                .contains("total more than 4096 bytes")
+        );
+        // A name the values do not hold (a stale declaration) fails too.
+        assert_eq!(
+            fill(&["{{gone}}"]).unwrap_err(),
+            "argument 1: variable gone is not declared"
+        );
+    }
+
+    #[test]
+    fn run_program_has_a_strict_shape_and_one_line_rules() {
+        let parse = |json: &str| {
+            serde_json::from_str::<Action>(json)
+                .map_err(|error| error.to_string())
+                .and_then(|action| action.validate_executable().map(|()| action))
+        };
+        let bare = parse(r#"{"type":"run_program","program":"/usr/bin/true"}"#).unwrap();
+        assert_eq!(
+            bare,
+            Action::RunProgram {
+                program: "/usr/bin/true".into(),
+                args: vec![],
+                directory: None,
+                variables: false,
+            }
+        );
+        assert_eq!(bare.type_name(), "run_program");
+        // Absent arguments and directory stay absent, so the JSON round-trips.
+        assert_eq!(
+            serde_json::to_string(&bare).unwrap(),
+            r#"{"type":"run_program","program":"/usr/bin/true"}"#
+        );
+        let full = Action::RunProgram {
+            program: "~/bin/my tool".into(),
+            args: vec!["".into(), "$(id) 'x' \"q\" ~".into()],
+            directory: Some("~".into()),
+            variables: false,
+        };
+        assert_eq!(parse(&serde_json::to_string(&full).unwrap()).unwrap(), full);
+        let at = |program: &str, args: Vec<String>, directory: Option<&str>| Action::RunProgram {
+            program: program.into(),
+            args,
+            directory: directory.map(Into::into),
+            variables: false,
+        };
+        let long = "x".repeat(Action::MAX_RUN_PROGRAM_BYTES);
+        at(
+            &format!("/{}", &long[1..]),
+            vec![long.clone(); 8],
+            Some("/"),
+        )
+        .validate()
+        .unwrap();
+        at("/a", vec!["a".into(); Action::MAX_RUN_PROGRAM_ARGS], None)
+            .validate()
+            .unwrap();
+        for (program, args, directory) in [
+            ("", vec![], None),
+            ("true", vec![], None),
+            ("./true", vec![], None),
+            ("~", vec![], None),
+            ("~user/x", vec![], None),
+            ("/usr/bin/", vec![], None),
+            ("/usr/bin/true\nid", vec![], None),
+            ("/usr/bin/tr\u{200b}ue", vec![], None),
+            (&*format!("/{long}"), vec![], None),
+            ("/a", vec!["a\nb".to_string()], None),
+            ("/a", vec!["a\tb".to_string()], None),
+            ("/a", vec!["a\u{2028}".to_string()], None),
+            ("/a", vec![format!("{long}x")], None),
+            (
+                "/a",
+                vec!["a".to_string(); Action::MAX_RUN_PROGRAM_ARGS + 1],
+                None,
+            ),
+            ("/a", vec![long.clone(); 9], None),
+            ("/a", vec![], Some("")),
+            ("/a", vec![], Some("relative")),
+            ("/a", vec![], Some("/tmp\nx")),
+        ] {
+            let action = at(program, args.clone(), directory);
+            assert!(
+                action.validate().is_err(),
+                "{program:?} {args:?} {directory:?}"
+            );
+        }
+        for json in [
+            r#"{"type":"run_program"}"#,
+            r#"{"type":"run_program","program":7}"#,
+            r#"{"type":"run_program","program":"/a","args":"x"}"#,
+            r#"{"type":"run_program","program":"/a","args":[1]}"#,
+            r#"{"type":"run_program","program":"/a","directory":null}"#,
+            r#"{"type":"run_program","program":"/a","shell":"sh"}"#,
+        ] {
+            assert!(parse(json).is_err(), "{json}");
+        }
+    }
+
+    #[test]
+    fn run_program_can_be_a_step() {
+        let program = Action::RunProgram {
+            program: "/usr/bin/true".into(),
+            args: vec![],
+            directory: None,
+            variables: false,
+        };
+        let text = Action::Text {
+            text: "hi".into(),
+            press_enter: true,
+        };
+        Action::MultiAction {
+            actions: vec![program.clone(), text.clone()],
+        }
+        .validate()
+        .unwrap();
+        Action::Conditional {
+            when: Condition::OutputMuted(true),
+            then: vec![program],
+            otherwise: vec![text],
+        }
+        .validate()
+        .unwrap();
     }
 
     #[test]
@@ -5423,5 +5999,242 @@ mod tests {
             otherwise: vec![Action::StreamlabsTransition],
         };
         assert!(conditional.uses_streamlabs() && conditional.uses_obs());
+    }
+
+    #[test]
+    fn a_plugin_condition_parses_strictly_and_round_trips() {
+        let parse = |json: &str| serde_json::from_str::<Condition>(json);
+        let full = parse(
+            r#"{"plugin":{"plugin":"com.example.lights","min_version":"1.2.0","condition":"is_on","params":{"entity":"light.{{room}}","level":3,"fade":true},"variables":["entity"],"value":true}}"#,
+        )
+        .unwrap();
+        let Condition::Plugin {
+            plugin,
+            condition,
+            params,
+            variables,
+            value,
+            ..
+        } = &full
+        else {
+            panic!("{full:?}");
+        };
+        assert_eq!(
+            (plugin.as_str(), condition.as_str()),
+            ("com.example.lights", "is_on")
+        );
+        assert_eq!(params.len(), 3);
+        assert_eq!(variables, &["entity".to_string()]);
+        assert!(*value);
+        assert_eq!(full.name(), "plugin");
+        full.validate().unwrap();
+        assert_eq!(parse(&serde_json::to_string(&full).unwrap()).unwrap(), full);
+        // Without params or variables they are not written.
+        let bare = parse(
+            r#"{"plugin":{"plugin":"com.example.lights","min_version":"1.2.0","condition":"is_on","value":false}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            serde_json::to_string(&bare).unwrap(),
+            r#"{"plugin":{"plugin":"com.example.lights","min_version":"1.2.0","condition":"is_on","value":false}}"#
+        );
+        for broken in [
+            // value is required, and boolean.
+            r#"{"plugin":{"plugin":"com.x.y","min_version":"1.0.0","condition":"on"}}"#,
+            r#"{"plugin":{"plugin":"com.x.y","min_version":"1.0.0","condition":"on","value":"yes"}}"#,
+            // Unknown fields, an action instead of a condition, a second key.
+            r#"{"plugin":{"plugin":"com.x.y","min_version":"1.0.0","condition":"on","value":true,"extra":1}}"#,
+            r#"{"plugin":{"plugin":"com.x.y","min_version":"1.0.0","action":"on","value":true}}"#,
+            r#"{"plugin":{"plugin":"com.x.y","min_version":"1.0.0","condition":"on","value":true},"output_muted":true}"#,
+            r#"{"plugin":{"plugin":"com.x.y","min_version":"1.0.0","condition":"on","params":{"a":null},"value":true}}"#,
+        ] {
+            assert!(parse(broken).is_err(), "{broken}");
+        }
+        // Inside a conditional, and in groups.
+        let action: Action = serde_json::from_str(
+            r#"{"type":"conditional","when":{"any":[{"plugin":{"plugin":"com.x.y","min_version":"1.0.0","condition":"on","value":true}},{"output_muted":true}]},"then":[{"type":"toggle_mute"}]}"#,
+        )
+        .unwrap();
+        action.validate().unwrap();
+        assert_eq!(
+            serde_json::from_str::<Action>(&serde_json::to_string(&action).unwrap()).unwrap(),
+            action
+        );
+    }
+
+    #[test]
+    fn a_plugin_condition_is_checked_by_the_plugin_action_rules() {
+        let condition = |plugin: &str, version: &str, id: &str, params: &str, variables: &str| {
+            serde_json::from_str::<Condition>(&format!(
+                r#"{{"plugin":{{"plugin":"{plugin}","min_version":"{version}","condition":"{id}","params":{params},"variables":{variables},"value":true}}}}"#
+            ))
+            .unwrap()
+        };
+        let error = |condition: Condition| condition.validate().unwrap_err();
+        condition(
+            "com.x.y",
+            "1.0.0",
+            "is_on",
+            r#"{"e":"a {{room}}"}"#,
+            r#"["e"]"#,
+        )
+        .validate()
+        .unwrap();
+        assert!(error(condition("tool", "1.0.0", "is_on", "{}", "[]")).contains("reverse-DNS"));
+        assert!(error(condition("com.x.y", "1.0", "is_on", "{}", "[]")).contains("min_version"));
+        assert!(
+            error(condition("com.x.y", "1.0.0", "On", "{}", "[]"))
+                .starts_with("plugin condition must be 1 to 64")
+        );
+        assert!(
+            error(condition(
+                "com.x.y",
+                "1.0.0",
+                "is_on",
+                r#"{"e":7}"#,
+                r#"["e"]"#
+            ))
+            .contains("not a text parameter of this condition")
+        );
+        assert!(
+            error(condition(
+                "com.x.y",
+                "1.0.0",
+                "is_on",
+                r#"{"e":"a"}"#,
+                r#"["e","e"]"#
+            ))
+            .contains("twice")
+        );
+        assert!(
+            error(condition(
+                "com.x.y",
+                "1.0.0",
+                "is_on",
+                r#"{"e":"{{ room }}"}"#,
+                r#"["e"]"#
+            ))
+            .starts_with("plugin parameter e: every {{")
+        );
+        assert!(
+            error(condition(
+                "com.x.y",
+                "1.0.0",
+                "is_on",
+                r#"{"e":"a\nb"}"#,
+                "[]"
+            ))
+            .contains("one line")
+        );
+        // Without variables, {{ is plain text.
+        condition("com.x.y", "1.0.0", "is_on", r#"{"e":"{{ room }}"}"#, "[]")
+            .validate()
+            .unwrap();
+        // Nested in a group, the conditional names the failure.
+        let action = Action::Conditional {
+            when: Condition::All(vec![
+                Condition::OutputMuted(true),
+                condition("com.x.y", "1.0.0", "On", "{}", "[]"),
+            ]),
+            then: vec![Action::ToggleMute],
+            otherwise: vec![],
+        };
+        assert!(
+            action
+                .validate()
+                .unwrap_err()
+                .contains("plugin condition must be")
+        );
+        // A plugin condition counts toward the tests in all.
+        let many = Condition::Any(
+            (0..8)
+                .map(|_| {
+                    Condition::All(vec![
+                        condition("com.x.y", "1.0.0", "a", "{}", "[]"),
+                        condition("com.x.y", "1.0.0", "b", "{}", "[]"),
+                        condition("com.x.y", "1.0.0", "c", "{}", "[]"),
+                    ])
+                })
+                .collect(),
+        );
+        assert!(many.validate().unwrap_err().contains("at most 16 tests"));
+    }
+
+    #[test]
+    fn a_plugin_condition_must_name_declared_variables_and_is_not_for_key_faces() {
+        let mut profile = sample();
+        profile.variables =
+            serde_json::from_str(r#"[{"name":"room","value":"desk"},{"name":"n","value":1}]"#)
+                .unwrap();
+        let with = |entity: &str| -> Action {
+            serde_json::from_str(&format!(
+                r#"{{"type":"conditional","when":{{"all":[{{"output_muted":true}},{{"plugin":{{"plugin":"com.x.y","min_version":"1.0.0","condition":"is_on","params":{{"entity":"{entity}"}},"variables":["entity"],"value":true}}}}]}},"then":[{{"type":"toggle_mute"}}]}}"#
+            ))
+            .unwrap()
+        };
+        profile.bindings[0].action = with("light.{{room}}-{{n}}");
+        profile.validate().unwrap();
+        profile.bindings[0].action = with("light.{{gone}}");
+        let error = profile.validate().unwrap_err();
+        assert!(
+            error.contains("plugin parameter entity: variable gone is not declared"),
+            "{error}"
+        );
+        let Action::Conditional { when, .. } = with("x") else {
+            unreachable!();
+        };
+        assert!(!when.is_variable_only());
+        assert!(!when.uses_obs());
+        assert_eq!(when.expected(), None);
+    }
+
+    #[test]
+    fn plugin_uses_list_actions_and_conditions_in_the_order_they_appear() {
+        let action: Action = serde_json::from_value(serde_json::json!({
+            "type": "conditional",
+            "when": {"any": [
+                {"output_muted": true},
+                {"plugin": {"plugin": "com.a.b", "min_version": "1.0.0", "condition": "first", "value": true}},
+                {"all": [
+                    {"timer_running": true},
+                    {"plugin": {"plugin": "com.c.d", "min_version": "2.0.0", "condition": "second",
+                        "params": {"t": "{{x}}"}, "variables": ["t"], "value": false}}
+                ]}
+            ]},
+            "then": [{"type": "plugin", "plugin": "com.a.b", "min_version": "1.0.0", "action": "third"}],
+            "else": [{"type": "conditional",
+                "when": {"plugin": {"plugin": "com.e.f", "min_version": "1.0.0", "condition": "fourth", "value": true}},
+                "then": [{"type": "toggle_mute"}]}]
+        }))
+        .unwrap();
+        action.validate().unwrap();
+        let uses = action.plugin_uses();
+        let listed: Vec<_> = uses
+            .iter()
+            .map(|used| (used.kind, used.plugin, used.id))
+            .collect();
+        use crate::plugin::PluginUseKind::{Action as Act, Condition as Cond};
+        assert_eq!(
+            listed,
+            [
+                (Cond, "com.a.b", "first"),
+                (Cond, "com.c.d", "second"),
+                (Act, "com.a.b", "third"),
+                (Cond, "com.e.f", "fourth"),
+            ]
+        );
+        assert_eq!(uses[1].min_version, "2.0.0");
+        assert_eq!(uses[1].variables, ["t".to_string()]);
+        assert!(action.uses_plugins());
+        // A conditional whose only plugin use is its condition still uses plugins.
+        let only_condition: Action = serde_json::from_value(serde_json::json!({
+            "type": "conditional",
+            "when": {"plugin": {"plugin": "com.a.b", "min_version": "1.0.0", "condition": "on", "value": true}},
+            "then": [{"type": "toggle_mute"}]
+        }))
+        .unwrap();
+        assert!(only_condition.uses_plugins() && !only_condition.uses_obs());
+        assert!(!Action::ToggleMute.uses_plugins());
+        assert!(Action::ToggleMute.plugin_uses().is_empty());
     }
 }

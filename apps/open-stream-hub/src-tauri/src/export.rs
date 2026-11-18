@@ -21,6 +21,9 @@ const STAMP_LEN: usize = 15;
 pub struct ExportResult {
     pub path: String,
     pub bytes: u64,
+    /// Plugin secrets the profile still held, left out of the file (`plugins::strip_secrets`).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub dropped_secrets: Vec<String>,
 }
 
 /// Lowercase ASCII letters and digits joined by single dashes, at most 40
@@ -186,6 +189,7 @@ pub fn export(
     Ok(ExportResult {
         path: path.to_string_lossy().into_owned(),
         bytes: bytes.len() as u64,
+        dropped_secrets: Vec::new(),
     })
 }
 

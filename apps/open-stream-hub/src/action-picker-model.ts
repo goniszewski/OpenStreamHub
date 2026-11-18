@@ -38,7 +38,9 @@ const pickerEntrySpecs: ReadonlyArray<readonly [PickerActionType, PickerCategory
   ['text', 'keyboard', 'type snippet clipboard string enter'],
   ['launch_app', 'apps', 'launch app program start bundle'],
   ['open_url', 'apps', 'website link address browser http web page'],
+  ['run_program', 'apps', 'program executable script binary command cli tool automation shortcut process exec'],
   ['terminal_command', 'apps', 'terminal iterm shell command session console claude codex agent cli run'],
+  ['plugin', 'apps', 'plugin extension add-on addon integration home assistant webhook smart light custom'],
   ['media', 'media', 'play pause next previous track stop music spotify itunes'],
   ['system', 'system', 'undo redo screenshot clipboard'],
   // One OBS entry: the operation is chosen in the editor afterwards. The keywords keep the nine

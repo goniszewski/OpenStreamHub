@@ -18,14 +18,12 @@
 //! Answers are `{"ok":true,"result":{..}}` or `{"ok":false,"error":".."}`.
 
 use crate::service::Services;
+use local_ipc::{Listener, Stream};
 use serde_json::{Value, json};
 use std::{
     fs,
     io::{Read, Write},
-    os::unix::{
-        fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt},
-        net::{UnixListener, UnixStream},
-    },
+    os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
     sync::{
         Arc,
@@ -72,7 +70,7 @@ pub fn forward_to(services: &Services, body: &Value) -> Answers {
 }
 
 /// Compares in time that depends only on the lengths.
-fn token_matches(expected: &str, given: &str) -> bool {
+pub(crate) fn token_matches(expected: &str, given: &str) -> bool {
     let (expected, given) = (expected.as_bytes(), given.as_bytes());
     expected.len() == given.len()
         && expected
@@ -103,7 +101,10 @@ fn undeclared(error: &str) -> bool {
     error.contains("is not declared") || error == "this run has no variables"
 }
 
-fn set_variable(request: &Value, forward: &dyn Fn(&Value) -> Answers) -> Result<Value, String> {
+pub(crate) fn set_variable(
+    request: &Value,
+    forward: &dyn Fn(&Value) -> Answers,
+) -> Result<Value, String> {
     let name = request["name"]
         .as_str()
         .ok_or("set_variable needs a name")?;
@@ -183,7 +184,7 @@ pub fn handle_line(line: &str, token: &str, forward: &dyn Fn(&Value) -> Answers)
     }
 }
 
-fn reply(mut stream: &UnixStream, answer: &Value) -> bool {
+fn reply(mut stream: &Stream, answer: &Value) -> bool {
     stream.write_all(format!("{answer}\n").as_bytes()).is_ok()
 }
 
@@ -197,7 +198,7 @@ enum Line {
 
 /// Reads up to the next newline (or the end of the stream) into a line, keeping any bytes after it in `pending`.
 /// The whole line must arrive by `deadline`, however the bytes are spread out.
-fn read_line(mut stream: &UnixStream, pending: &mut Vec<u8>, deadline: Instant) -> Line {
+fn read_line(mut stream: &Stream, pending: &mut Vec<u8>, deadline: Instant) -> Line {
     let mut chunk = [0u8; 1024];
     loop {
         if let Some(end) = pending.iter().position(|byte| *byte == b'\n') {
@@ -227,7 +228,7 @@ fn read_line(mut stream: &UnixStream, pending: &mut Vec<u8>, deadline: Instant) 
 
 /// Serves one connection until it closes, is late with a line, sends a line that is too long, or sends a wrong
 /// token (answered, then closed).
-fn serve(stream: UnixStream, token: &str, forward: &Forward) {
+fn serve(stream: Stream, token: &str, forward: &Forward) {
     if stream.set_write_timeout(Some(READ_TIMEOUT)).is_err() {
         return;
     }
@@ -259,9 +260,14 @@ fn serve(stream: UnixStream, token: &str, forward: &Forward) {
 /// Creates the ingress directory when it is missing, then accepts it only as a real directory (never a symbolic
 /// link) owned by this user, and makes it 0700. Anything else is refused, and ingress stays off.
 fn prepare_dir(dir: &Path) -> Result<(), String> {
+    prepare_private_dir(dir, "ingress", "agent hooks and osh cannot reach the app")
+}
+
+/// [`prepare_dir`] for any socket directory: `what` names it and `consequence` says what a refusal means.
+pub(crate) fn prepare_private_dir(dir: &Path, what: &str, consequence: &str) -> Result<(), String> {
     let refused = |why: &str| {
         format!(
-            "the ingress directory {} {why}, so agent hooks and osh cannot reach the app",
+            "the {what} directory {} {why}, so {consequence}",
             dir.display()
         )
     };
@@ -270,12 +276,12 @@ fn prepare_dir(dir: &Path) -> Result<(), String> {
             .recursive(true)
             .mode(0o700)
             .create(dir)
-            .map_err(|error| format!("could not create the ingress directory: {error}"))?,
-        Err(error) => return Err(format!("could not inspect the ingress directory: {error}")),
+            .map_err(|error| format!("could not create the {what} directory: {error}"))?,
+        Err(error) => return Err(format!("could not inspect the {what} directory: {error}")),
         Ok(_) => {}
     }
     let metadata = fs::symlink_metadata(dir)
-        .map_err(|error| format!("could not inspect the ingress directory: {error}"))?;
+        .map_err(|error| format!("could not inspect the {what} directory: {error}"))?;
     if !metadata.file_type().is_dir() {
         return Err(refused(
             "is not a plain directory (a symbolic link or a file)",
@@ -286,11 +292,11 @@ fn prepare_dir(dir: &Path) -> Result<(), String> {
         return Err(refused("belongs to another user"));
     }
     fs::set_permissions(dir, fs::Permissions::from_mode(0o700))
-        .map_err(|error| format!("could not protect the ingress directory: {error}"))
+        .map_err(|error| format!("could not protect the {what} directory: {error}"))
 }
 
 /// A fresh 256-bit token as hex.
-fn new_token() -> Result<String, String> {
+pub(crate) fn new_token() -> Result<String, String> {
     let mut bytes = [0u8; 32];
     fs::File::open("/dev/urandom")
         .and_then(|mut random| random.read_exact(&mut bytes))
@@ -309,16 +315,15 @@ impl Ingress {
         let failed = |what: &str, error: std::io::Error| format!("could not {what}: {error}");
         prepare_dir(dir)?;
         let socket = dir.join(SOCKET_FILE);
-        match fs::remove_file(&socket) {
+        match local_ipc::remove(&socket) {
             Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
                 return Err(failed("remove the old ingress socket", error));
             }
             _ => {}
         }
-        let listener = UnixListener::bind(&socket)
-            .map_err(|error| failed("bind the ingress socket", error))?;
-        fs::set_permissions(&socket, fs::Permissions::from_mode(0o600))
-            .map_err(|error| failed("protect the ingress socket", error))?;
+        let listener =
+            Listener::bind(&socket).map_err(|error| failed("bind the ingress socket", error))?;
+        local_ipc::protect(&socket).map_err(|error| failed("protect the ingress socket", error))?;
         let token = new_token()?;
         let staged = dir.join(format!("{TOKEN_FILE}.new"));
         let _ = fs::remove_file(&staged);
@@ -367,7 +372,7 @@ impl Ingress {
 
     /// Removes the socket and the token, so `osh` reports the app as not running.
     pub fn stop(&self) {
-        let _ = fs::remove_file(self.dir.join(SOCKET_FILE));
+        let _ = local_ipc::remove(self.dir.join(SOCKET_FILE));
         let _ = fs::remove_file(self.dir.join(TOKEN_FILE));
     }
 }
@@ -474,7 +479,7 @@ mod tests {
         );
     }
 
-    fn exchange(stream: &mut UnixStream, line: &[u8]) -> Value {
+    fn exchange(stream: &mut Stream, line: &[u8]) -> Value {
         stream.write_all(line).unwrap();
         let mut answer = String::new();
         BufReader::new(&*stream).read_line(&mut answer).unwrap();
@@ -494,7 +499,7 @@ mod tests {
         let token = fs::read_to_string(dir.join(TOKEN_FILE)).unwrap();
         assert_eq!(token.len(), 64);
 
-        let mut stream = UnixStream::connect(dir.join(SOCKET_FILE)).unwrap();
+        let mut stream = Stream::connect(dir.join(SOCKET_FILE)).unwrap();
         let ok = exchange(
             &mut stream,
             format!("{{\"token\":\"{token}\",\"type\":\"get_variables\"}}\n").as_bytes(),
@@ -508,7 +513,7 @@ mod tests {
         assert_eq!(stream.read_to_end(&mut rest).unwrap(), 0);
         let mut long = vec![b' '; MAX_LINE + 10];
         long.push(b'\n');
-        let mut other = UnixStream::connect(dir.join(SOCKET_FILE)).unwrap();
+        let mut other = Stream::connect(dir.join(SOCKET_FILE)).unwrap();
         let refused = exchange(&mut other, &long);
         assert_eq!(refused["error"], "the request line is too long");
 
@@ -525,8 +530,8 @@ mod tests {
         let dir = dir(temp.path());
         let _ingress = Ingress::start(&dir, Arc::new(|_| Vec::new())).unwrap();
         let token = fs::read_to_string(dir.join(TOKEN_FILE)).unwrap();
-        let mut held: Vec<UnixStream> = (0..MAX_CONNECTIONS)
-            .map(|_| UnixStream::connect(dir.join(SOCKET_FILE)).unwrap())
+        let mut held: Vec<Stream> = (0..MAX_CONNECTIONS)
+            .map(|_| Stream::connect(dir.join(SOCKET_FILE)).unwrap())
             .collect();
         // Every held connection is being served once it has answered.
         for stream in &mut held {
@@ -536,7 +541,7 @@ mod tests {
             );
             assert_eq!(pong["ok"], true);
         }
-        let mut extra = UnixStream::connect(dir.join(SOCKET_FILE)).unwrap();
+        let mut extra = Stream::connect(dir.join(SOCKET_FILE)).unwrap();
         extra
             .set_read_timeout(Some(Duration::from_secs(2)))
             .unwrap();
@@ -621,7 +626,7 @@ mod tests {
         // Every slot taken by a client that sends one byte every 200 ms and never a newline.
         let drips: Vec<_> = (0..MAX_CONNECTIONS)
             .map(|_| {
-                let mut stream = UnixStream::connect(dir.join(SOCKET_FILE)).unwrap();
+                let mut stream = Stream::connect(dir.join(SOCKET_FILE)).unwrap();
                 thread::spawn(move || {
                     let mut sent = 0;
                     while started.elapsed() < READ_TIMEOUT * 3 {
@@ -637,7 +642,7 @@ mod tests {
             .collect();
         thread::sleep(READ_TIMEOUT + Duration::from_millis(600));
         // The deadline closed them all, although none was ever silent for long: a new client is served.
-        let mut stream = UnixStream::connect(dir.join(SOCKET_FILE)).unwrap();
+        let mut stream = Stream::connect(dir.join(SOCKET_FILE)).unwrap();
         stream
             .set_read_timeout(Some(Duration::from_secs(2)))
             .unwrap();

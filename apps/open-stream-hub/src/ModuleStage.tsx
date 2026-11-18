@@ -1,7 +1,7 @@
 import type { CSSProperties, DragEvent, PointerEvent } from 'react';
 import { ChevronDown, ChevronUp } from 'lucide-react';
 import { DialFace, KeyDisplayContent } from './DisplayContent';
-import { keypadDepth, keypadIsBack } from './keypad-model';
+import { keySlotUsed, keypadDepth, keypadIsBack } from './keypad-model';
 import type { KnobOrientation } from './knob-orientation';
 import type { StoredLighting } from './lighting-state';
 import { litLedColours } from './lighting-state';
@@ -70,7 +70,7 @@ export function ModuleStage({ module, where, editor, profile, live, stored, knob
       if (module === 'm131e') return <button key={area.control} type="button" className={`image-control round${isPicked ? ' selected' : ''}${livePressed(live, area.control)}`} style={style} aria-label={label} aria-pressed={isPicked} onClick={() => onSelect(area.control)} {...drop}>{livePointer(live, area.control, true)}</button>;
       if (module === 'm4315') {
         const page = editor.currentKeypadPage;
-        return <button key={area.control} type="button" className={`image-control key-display${isPicked ? ' selected' : ''}${livePressed(live, area.control)}`} style={style} aria-label={label} aria-pressed={isPicked} onClick={() => onSelect(area.control)} {...drop}>
+        return <button key={area.control} type="button" className={`image-control key-display${isPicked ? ' selected' : ''}${livePressed(live, area.control)}${keySlotUsed(page.slots[area.control], keypadIsBack(editor.keypadPath, area.control)) ? '' : ' unbound'}`} style={style} aria-label={label} aria-pressed={isPicked} onClick={() => onSelect(area.control)} {...drop}>
           <span className="key-upright" style={upright}>
             <KeyDisplayContent device key={page.id} artwork={page.artwork?.[String(area.control)]} slot={page.slots[area.control]} pages={profile.keypad?.pages ?? []} depth={keypadDepth(editor.keypadPath)} back={keypadIsBack(editor.keypadPath, area.control)} />
           </span>
@@ -78,13 +78,13 @@ export function ModuleStage({ module, where, editor, profile, live, stored, knob
       }
       if (module === 'm005s') {
         const value = faderValue(area.control);
-        return <div key={area.control} role="slider" tabIndex={0} className={`image-control fader${action ? ' bound' : ''}${isPicked ? ' selected' : ''}${live?.faders[area.control] !== undefined ? ' live' : ''}`} style={style}
+        return <div key={area.control} role="slider" tabIndex={0} className={`image-control fader${action ? ' bound' : ''}${isPicked ? ' selected' : ''}${live?.faders[area.control] !== undefined ? ' live' : ''}${action ? '' : ' unbound'}`} style={style}
           aria-label={controlLabel(module, area.control)} aria-orientation="vertical" aria-valuemin={0} aria-valuemax={faderMaximum} aria-valuenow={value}
           onPointerDown={event => onFaderPointer(area.control, event)} onPointerMove={event => onFaderPointer(area.control, event)}
           onKeyDown={event => { const next = faderFromKey(event.key, value, faderMaximum); if (next !== null) { event.preventDefault(); onSelect(area.control); onFaderValue(area.control, next); } }} {...drop}>
         </div>;
       }
-      return <button key={area.control} type="button" className={`image-control${area.round ? ' round' : ''}${action ? ' bound' : ''}${isPicked ? ' selected' : ''}${livePressed(live, area.control)}`} style={style} aria-label={label} aria-pressed={isPicked} onClick={() => onSelect(area.control)} {...drop}>
+      return <button key={area.control} type="button" className={`image-control${area.round ? ' round' : ''}${action ? ' bound' : ''}${isPicked ? ' selected' : ''}${livePressed(live, area.control)}${action ? '' : ' unbound'}`} style={style} aria-label={label} aria-pressed={isPicked} onClick={() => onSelect(area.control)} {...drop}>
         {livePointer(live, area.control)}
         {livePulse(live, area.control)}
       </button>;

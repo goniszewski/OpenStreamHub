@@ -110,8 +110,8 @@ pub struct LiveDevice {
 /// base's top-left corner with its USB-C edges at the top and left (`col` 0 to
 /// 5, `row` 0 to 3). The module's footprint extends right and down from here. A
 /// negative `row` or `col` means the module starts beyond that edge, so part of
-/// it hangs outside the base. These cells are recognized from the observed
-/// macOS USB port paths.
+/// it hangs outside the base. These cells are recognized from the USB port
+/// chain the module enumerates on (see `base_slots`).
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 pub struct BaseCell {
     pub col: i8,
@@ -145,12 +145,13 @@ const VENDOR_USAGE_PAGE: u16 = 0xff00;
 /// This is inferred from the SDK and synthetic captures, not yet verified on
 /// every module's hardware.
 pub fn live_devices(devices: &[ModuleIdentity]) -> Vec<LiveDevice> {
-    live_devices_with_locations(devices, &HashMap::new())
+    live_devices_with_chains(devices, &HashMap::new())
 }
 
-fn live_devices_with_locations(
+/// `chains` maps a HID path to the USB port chain its device enumerated on (see [`read_port_chains`]).
+fn live_devices_with_chains(
     devices: &[ModuleIdentity],
-    location_ids: &HashMap<Vec<u8>, u32>,
+    chains: &HashMap<Vec<u8>, Vec<u8>>,
 ) -> Vec<LiveDevice> {
     let supported: Vec<_> = devices
         .iter()
@@ -168,8 +169,8 @@ fn live_devices_with_locations(
     let hub = devices
         .iter()
         .filter(|device| device.module == Some(ModuleKind::M0064))
-        .find_map(|device| location_ids.get(device.path.as_bytes()))
-        .and_then(|location_id| base_slots::hub_prefix(&base_slots::port_chain(*location_id)));
+        .find_map(|device| chains.get(device.path.as_bytes()))
+        .and_then(|chain| base_slots::hub_prefix(chain));
     let mut listed: Vec<LiveDevice> = Vec::new();
     for (device, module) in &supported {
         if device.usage_page < VENDOR_USAGE_PAGE && has_vendor_page(device) {
@@ -179,56 +180,45 @@ fn live_devices_with_locations(
         if listed.iter().any(|entry| entry.path_hex == path_hex) {
             continue;
         }
+        let chain = chains.get(device.path.as_bytes());
+        let slot = chain.and_then(|chain| base_slot(*module, chain, hub.as_deref()));
         listed.push(LiveDevice {
             path_hex,
             module: *module,
             serial_number: device.serial_number.clone(),
-            base_cell: location_ids
-                .get(device.path.as_bytes())
-                .and_then(|location_id| base_cell(*module, *location_id, hub.as_deref())),
-            base_turn: location_ids
-                .get(device.path.as_bytes())
-                .and_then(|location_id| base_slot(*module, *location_id, hub.as_deref()))
-                .map(|slot| slot.turn()),
-            port_chain: location_ids
-                .get(device.path.as_bytes())
-                .map(|location_id| base_slots::chain_text(&base_slots::port_chain(*location_id))),
+            base_cell: slot.and_then(|slot| cell(slot.col, slot.row)),
+            base_turn: slot.map(|slot| slot.turn()),
+            port_chain: chain.map(|chain| base_slots::chain_text(chain)),
         });
     }
     sort_devices(&mut listed);
     listed
 }
 
-/// Resolves a module's macOS location ID to the cell its footprint starts at, from the slot table
-/// (`base_slots`), given the chain of the base's hub. The high location-ID byte identifies the host bus; the port
-/// chain after it is stable across bus-number changes. Without a hub chain (the base is not visible) or for a
-/// connector the table does not know, the position stays unset and the chain is shown in diagnostics.
-pub fn base_cell(module: ServiceModule, location_id: u32, hub: Option<&[u8]>) -> Option<BaseCell> {
-    let found = base_slot(module, location_id, hub)?;
-    cell(found.col, found.row)
-}
-
-/// The slot-table entry for a module's location ID, given the chain of the base's hub.
-fn base_slot(
-    module: ServiceModule,
-    location_id: u32,
-    hub: Option<&[u8]>,
-) -> Option<base_slots::Slot> {
-    let slot = base_slots::slot_name(&base_slots::port_chain(location_id), hub?)?;
+/// The slot-table entry (`base_slots`) for a module on USB port `chain`, given the chain of the base's hub. The chain
+/// leaves out the host bus, so it is stable across bus-number changes. Without a hub chain (the base is not visible)
+/// or for a chain that is none of the base's connectors, the slot stays unknown (the caller keeps the chain for diagnostics).
+fn base_slot(module: ServiceModule, chain: &[u8], hub: Option<&[u8]>) -> Option<base_slots::Slot> {
+    let slot = base_slots::slot_name(chain, hub?)?;
     base_slots::lookup(module, &slot)
 }
 
+/// Reads the USB port chain of every module and base interface not in `known`, keyed by HID path, without sending
+/// input, feature or output reports. On macOS the chain comes from the HID location ID. Other platforms read none
+/// yet, so their modules stay unplaced. A platform supplies the chain as ports below the host bus; Linux sysfs names and
+/// Windows location paths use the same numbering, so the slot table should apply unchanged (not yet verified on Linux
+/// or Windows hardware).
 #[cfg(target_os = "macos")]
-fn read_location_ids(
+fn read_port_chains(
     devices: &[ModuleIdentity],
-    known: &HashMap<Vec<u8>, u32>,
-) -> HashMap<Vec<u8>, u32> {
+    known: &HashMap<Vec<u8>, Vec<u8>>,
+) -> HashMap<Vec<u8>, Vec<u8>> {
     let Ok(api) = hidapi::HidApi::new() else {
         return HashMap::new();
     };
     let was_exclusive = api.get_open_exclusive();
     api.set_open_exclusive(false);
-    let locations = devices
+    let chains = devices
         .iter()
         .filter(|device| {
             replay::service_module(device.module).is_some()
@@ -241,23 +231,30 @@ fn read_location_ids(
                 .ok()?
                 .get_location_id()
                 .ok()?;
-            Some((device.path.as_bytes().to_vec(), location_id))
+            Some((
+                device.path.as_bytes().to_vec(),
+                base_slots::location_id_chain(location_id),
+            ))
         })
         .collect();
     api.set_open_exclusive(was_exclusive);
-    locations
+    chains
 }
 
+/// No reader on this platform yet, so modules stay unplaced (see the macOS version).
 #[cfg(not(target_os = "macos"))]
-fn read_location_ids(_: &[ModuleIdentity], _: &HashMap<Vec<u8>, u32>) -> HashMap<Vec<u8>, u32> {
+fn read_port_chains(
+    _: &[ModuleIdentity],
+    _: &HashMap<Vec<u8>, Vec<u8>>,
+) -> HashMap<Vec<u8>, Vec<u8>> {
     HashMap::new()
 }
 
-/// Builds the live inventory and reads macOS HID location IDs without sending
-/// input, feature, or output reports. Other platforms leave positions unknown.
+/// Builds the live inventory and reads the USB port chains that place modules on the base (see
+/// [`read_port_chains`]), without sending input, feature, or output reports.
 pub fn live_devices_with_host_positions(devices: &[ModuleIdentity]) -> Vec<LiveDevice> {
-    let locations = read_location_ids(devices, &HashMap::new());
-    live_devices_with_locations(devices, &locations)
+    let chains = read_port_chains(devices, &HashMap::new());
+    live_devices_with_chains(devices, &chains)
 }
 
 /// Orders devices by wire module id, then serial number (absent first), then
@@ -330,7 +327,7 @@ pub fn watch_inventory(
 /// sends no feature or output reports. Not yet verified on hardware.
 pub fn hid_inventory() -> impl FnMut() -> Result<Vec<LiveDevice>, String> {
     let mut registry: Option<DeviceRegistry> = None;
-    let mut locations: HashMap<Vec<u8>, u32> = HashMap::new();
+    let mut chains: HashMap<Vec<u8>, Vec<u8>> = HashMap::new();
     move || {
         let refreshed = match registry.as_mut() {
             Some(existing) => existing.refresh(),
@@ -350,10 +347,10 @@ pub fn hid_inventory() -> impl FnMut() -> Result<Vec<LiveDevice>, String> {
             .iter()
             .map(|device| device.path.as_bytes().to_vec())
             .collect();
-        locations.retain(|path, _| present.contains(path));
-        let discovered_locations = read_location_ids(&devices, &locations);
-        locations.extend(discovered_locations);
-        Ok(live_devices_with_locations(&devices, &locations))
+        chains.retain(|path, _| present.contains(path));
+        let discovered = read_port_chains(&devices, &chains);
+        chains.extend(discovered);
+        Ok(live_devices_with_chains(&devices, &chains))
     }
 }
 
@@ -743,27 +740,21 @@ impl Feeds {
 mod tests {
     #[test]
     fn modules_are_placed_by_their_slot_below_the_bases_hub() {
-        // Location IDs read on 10 and 11 October 2026: the base at 1.1.1.4.4, the 15-key module and the faders both
-        // at 1.1.2.3 (arrangement two), and keys at 1.1.1.1.1 (arrangement three).
+        // Chains read on 10 and 11 October 2026: the base at 1.1.1.4.4, the 15-key module and the faders both at
+        // 1.1.2.3 (arrangement two), and keys at 1.1.1.1.1 (arrangement three).
+        let at = |module, chain: &[u8], hub: Option<&[u8]>| {
+            base_slot(module, chain, hub).and_then(|slot| cell(slot.col, slot.row))
+        };
         let hub: Option<&[u8]> = Some(&[1, 1]);
-        assert_eq!(
-            base_cell(ServiceModule::M005S, 0x0211_2300, hub),
-            cell(0, 2)
-        );
-        assert_eq!(
-            base_cell(ServiceModule::M4315, 0x0211_2300, hub),
-            cell(0, 1)
-        );
-        assert_eq!(
-            base_cell(ServiceModule::M4315, 0x0211_1110, hub),
-            cell(0, -1)
-        );
+        assert_eq!(at(ServiceModule::M005S, &[1, 1, 2, 3], hub), cell(0, 2));
+        assert_eq!(at(ServiceModule::M4315, &[1, 1, 2, 3], hub), cell(0, 1));
+        assert_eq!(at(ServiceModule::M4315, &[1, 1, 1, 1, 1], hub), cell(0, -1));
         // Without the base's hub, or on a connector the table does not know, nothing is guessed.
-        assert_eq!(base_cell(ServiceModule::M005S, 0x0211_2300, None), None);
-        assert_eq!(base_cell(ServiceModule::M4315, 0x0211_9900, hub), None);
+        assert_eq!(at(ServiceModule::M005S, &[1, 1, 2, 3], None), None);
+        assert_eq!(at(ServiceModule::M4315, &[1, 1, 9, 9], hub), None);
         // Another host port moves the whole chain, and the table follows it.
         assert_eq!(
-            base_cell(ServiceModule::M005S, 0x0221_2300, Some(&[2, 1])),
+            at(ServiceModule::M005S, &[2, 1, 2, 3], Some(&[2, 1])),
             cell(0, 2)
         );
     }
@@ -775,13 +766,13 @@ mod tests {
             identity("faders", 0x0200, Some("F1"), 0xff00),
             identity("keys", 0x01fe, Some("K1"), 0xff00),
         ];
-        let locations: HashMap<Vec<u8>, u32> = [
-            (b"base".to_vec(), 0x0211_1440),   // 1.1.1.4.4
-            (b"faders".to_vec(), 0x0211_2300), // 1.1.2.3
-            (b"keys".to_vec(), 0x0211_9900),   // not in the table
+        let chains: HashMap<Vec<u8>, Vec<u8>> = [
+            (b"base".to_vec(), vec![1, 1, 1, 4, 4]),
+            (b"faders".to_vec(), vec![1, 1, 2, 3]),
+            (b"keys".to_vec(), vec![1, 1, 9, 9]), // not in the table
         ]
         .into();
-        let listed = live_devices_with_locations(&devices, &locations);
+        let listed = live_devices_with_chains(&devices, &chains);
         let faders = listed
             .iter()
             .find(|device| device.module == ServiceModule::M005S)
@@ -794,7 +785,7 @@ mod tests {
         assert_eq!(keys.base_cell, None);
         assert_eq!(keys.port_chain.as_deref(), Some("1.1.9.9"));
         // Without the base in the inventory nothing is placed.
-        let without_base = live_devices_with_locations(&devices[1..], &locations);
+        let without_base = live_devices_with_chains(&devices[1..], &chains);
         assert!(without_base.iter().all(|device| device.base_cell.is_none()));
     }
 

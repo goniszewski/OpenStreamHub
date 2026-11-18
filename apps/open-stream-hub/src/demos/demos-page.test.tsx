@@ -7,6 +7,7 @@ const render = (desktop: boolean, modules: string[]) => renderToStaticMarkup(<De
 
 import { DemoKeys } from './DemoKeys';
 import { SpeedTestScreen } from './SpeedTestScreen';
+import { TwofoldScreen } from './TwofoldScreen';
 import { WhackScreen } from './WhackScreen';
 
 describe('DemoKeys', () => {
@@ -44,7 +45,29 @@ describe('WhackScreen', () => {
   });
 });
 
+describe('TwofoldScreen', () => {
+  it('shows the board, the score and how to play, and offers New game and Exit', () => {
+    const runtime = { getPhase: () => 'idle', start: () => new Promise(() => {}), end: async () => {}, another: () => runtime } as unknown as DemoRuntime;
+    const markup = renderToStaticMarkup(<TwofoldScreen runtime={runtime} pathHex="ab" onEnd={() => {}} />);
+    expect(markup).toContain('Twofold');
+    expect(markup).toContain('Press an edge key');
+    expect(markup).toMatch(/Score 0 · best \d+ · 0 moves/);
+    expect(markup).toContain('>New game<');
+    expect(markup).toContain('>Exit<');
+    expect(markup).toContain('arrow keys');
+    expect(markup.match(/image-control key-display demo-key/g)).toHaveLength(15);
+  });
+});
+
 describe('DemosPage', () => {
+  it('lists Twofold on the keys and names the module whose turns also move', () => {
+    const runtime = {} as DemoRuntime;
+    const alone = renderToStaticMarkup(<DemosPage desktop devices={[{ module: 'm4315', path_hex: 'ab' }]} runtime={runtime} />);
+    expect(alone).toContain('Twofold');
+    expect(alone).toContain('A Roller module or 3-knob module, when connected, makes moves too.');
+    const knobs = renderToStaticMarkup(<DemosPage desktop devices={[{ module: 'm4315', path_hex: 'ab' }, { module: 'm003k', path_hex: 'cd' }]} runtime={runtime} />);
+    expect(knobs).toContain('The 3-knob module makes moves too while it plays.');
+  });
   it('lists tic-tac-toe, says what it needs and that profile actions pause, and disables Play with no module', () => {
     const markup = render(true, ['m131e']);
     expect(markup).toContain('Tic-tac-toe');

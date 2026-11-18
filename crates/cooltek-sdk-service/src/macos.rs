@@ -1,16 +1,26 @@
 //! Explicit macOS actions through system tools. Constructing a dispatcher performs no actions.
+//!
+//! [`MacOsHost`] implements the [`crate::host`] traits with `osascript`,
+//! `open`, the pasteboard tools, `screencapture` and `afplay`;
+//! [`MacOsDispatcher`] is the shared [`HostDispatcher`] over it.
 
+mod keys;
+
+pub use crate::host::AudioSnapshot;
+pub use crate::host::process::kill_running_programs;
 use crate::{
-    Action, ActionDispatcher, MacroStep, MediaCommand, Modifier, ServiceState, SystemCommand,
-    TerminalApp, TimerAlert, TimerAlerter, VariableValue,
-    obs::{OBS_UNAVAILABLE, ObsClient},
-    streamlabs::{STREAMLABS_UNAVAILABLE, StreamlabsClient},
-};
-use std::{
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
+    MacroStep, MediaCommand, Modifier, SystemCommand, TerminalApp, TimerAlert,
+    host::{
+        AudioHost, Host, HostDispatcher, KeyInjector, Launcher, Notifier, Process, SystemHost,
+        process::{
+            ProcessOutput, ProcessRequest, STDIN_LIMIT, SystemProcessRunner, SystemSleeper,
+            check_cancellation,
+        },
     },
+};
+pub use keys::{key_for_virtual_code, virtual_key_code};
+use std::{
+    sync::{Arc, atomic::AtomicBool},
     time::Duration,
 };
 
@@ -20,7 +30,6 @@ const PBCOPY: &str = "/usr/bin/pbcopy";
 const PBPASTE: &str = "/usr/bin/pbpaste";
 const SCREENCAPTURE: &str = "/usr/sbin/screencapture";
 const AFPLAY: &str = "/usr/bin/afplay";
-const PROCESS_TIMEOUT: Duration = Duration::from_secs(5);
 /// Bound for the timer notification (`osascript` returns at once once the
 /// notification is posted).
 const TIMER_NOTIFICATION_TIMEOUT: Duration = Duration::from_secs(3);
@@ -149,25 +158,15 @@ const MEDIA_STOP_SCRIPT: &[&str] = &[
 ];
 /// The players `stop` addresses, as named in the stop script's failures.
 const MEDIA_STOP_PLAYERS: [&str; 2] = ["Music", "Spotify"];
-const OUTPUT_LIMIT: usize = 16 * 1024;
-/// Largest stdin payload. It is below the 16 KiB initial macOS pipe buffer, so
-/// writing it before monitoring the child cannot block on a child that never reads.
-const STDIN_LIMIT: usize = 8 * 1024;
 /// Asks System Events for the frontmost application's bundle identifier.
 const FRONTMOST_APP_SCRIPT: &str = "tell application \"System Events\" to get bundle identifier of first application process whose frontmost is true";
 
-/// Fixed delay between `multi_action` steps, matching the official app.
-const STEP_SPACING: Duration = Duration::from_millis(280);
 /// Delay before restoring the clipboard, so the target application can read
 /// the pasted snippet first. A slower application can still paste the restored text.
 const CLIPBOARD_RESTORE_DELAY: Duration = Duration::from_millis(500);
 /// Pasteboard tools choose their text encoding from the locale; a bundled app
 /// can start without one, so clipboard tools always run with UTF-8.
 const UTF8_ENV: &[(&str, &str)] = &[("LANG", "en_US.UTF-8"), ("LC_ALL", "en_US.UTF-8")];
-/// Upper bound on the wall-clock time of a whole `multi_action`. It is checked
-/// before each step starts; a step that is already running is bounded only by
-/// its own subprocess timeouts.
-const MULTI_ACTION_DEADLINE: Duration = Duration::from_secs(15);
 /// Clipboard type names that `clipboard info` reports for plain text only.
 const PLAIN_TEXT_TYPES: &[&str] = &["«class utf8»", "«class ut16»", "string", "Unicode text"];
 
@@ -338,7 +337,7 @@ fn macro_payload(steps: &[MacroStep]) -> Result<Vec<u8>, String> {
         .iter()
         .enumerate()
         .map(|(index, step)| {
-            let code = crate::profile::virtual_key_code(&step.key).ok_or_else(|| {
+            let code = keys::virtual_key_code(&step.key).ok_or_else(|| {
                 format!("macro step {}: the key has no virtual key code", index + 1)
             })?;
             Ok(serde_json::json!({
@@ -380,894 +379,6 @@ fn macro_failure(output: &ProcessOutput) -> String {
         format!("stderr: {} bytes, not shown", output.stderr.len())
     };
     format!("{OSASCRIPT}: {} ({cause})", output.status)
-}
-
-/// The system output's volume and mute state, suitable for exact restoration.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct AudioSnapshot {
-    /// Output volume in percentage points, between 0 and 100 inclusive.
-    pub output_volume: u8,
-    /// Whether the system output is muted.
-    pub output_muted: bool,
-}
-
-impl AudioSnapshot {
-    /// Checks the volume before a caller-provided snapshot reaches system tools.
-    pub fn validate(&self) -> Result<(), String> {
-        if self.output_volume > 100 {
-            Err("audio snapshot output volume must be between 0 and 100".into())
-        } else {
-            Ok(())
-        }
-    }
-}
-
-/// Executes validated actions on macOS. Shortcut and media-key execution may
-/// require the user's Accessibility and Automation permissions for the
-/// invoking application.
-///
-/// Failed or timed-out actions are returned to the caller and are never retried;
-/// an action may already have taken effect before its process reports a failure.
-pub struct MacOsDispatcher {
-    runner: Box<dyn ProcessRunner>,
-    sleeper: Box<dyn Sleeper>,
-    /// The loopback OBS client for `obs_scene`, when this run has an endpoint.
-    obs: Option<ObsClient>,
-    /// The loopback Streamlabs client for `streamlabs_*`, when this run has one.
-    streamlabs: Option<StreamlabsClient>,
-    /// Set once a media key has asked macOS for the Accessibility prompt;
-    /// later media keys only check the permission (see [`MEDIA_KEY_SCRIPT`]).
-    media_access_requested: bool,
-    /// The service state handed over before the current action.
-    service_state: ServiceState,
-    /// Current values of the declared variables, shared with the control channel.
-    variables: crate::SharedVariables,
-}
-
-impl MacOsDispatcher {
-    /// Creates a dispatcher without launching subprocesses or requesting permissions.
-    pub fn new() -> Self {
-        Self {
-            runner: Box::new(SystemProcessRunner { cancellation: None }),
-            sleeper: Box::new(SystemSleeper),
-            obs: None,
-            streamlabs: None,
-            media_access_requested: false,
-            service_state: ServiceState::default(),
-            variables: Default::default(),
-        }
-    }
-
-    /// Creates a dispatcher that stops starting actions when the shared flag is set.
-    ///
-    /// Cancellation also stops monitoring an in-flight system-tool process and
-    /// attempts bounded kill/reap cleanup. An action may already have taken effect.
-    pub fn with_cancellation(cancellation: Arc<AtomicBool>) -> Self {
-        Self {
-            runner: Box::new(SystemProcessRunner {
-                cancellation: Some(cancellation),
-            }),
-            sleeper: Box::new(SystemSleeper),
-            obs: None,
-            streamlabs: None,
-            media_access_requested: false,
-            service_state: ServiceState::default(),
-            variables: Default::default(),
-        }
-    }
-
-    /// Runs `obs_scene` actions through `obs` (one loopback connection per
-    /// action, bounded by [`crate::obs::DEFAULT_TIMEOUT`]). Without a client
-    /// they are unavailable: [`ActionDispatcher::unavailable`] reports them and
-    /// a direct dispatch fails without any I/O.
-    pub fn with_obs(mut self, obs: Option<ObsClient>) -> Self {
-        self.obs = obs;
-        self
-    }
-
-    /// Runs `streamlabs_*` actions through `streamlabs`, like
-    /// [`MacOsDispatcher::with_obs`]. Without a client they are unavailable
-    /// ([`STREAMLABS_UNAVAILABLE`]) and a direct dispatch does no I/O.
-    pub fn with_streamlabs(mut self, streamlabs: Option<StreamlabsClient>) -> Self {
-        self.streamlabs = streamlabs;
-        self
-    }
-
-    /// Keeps variable values in `variables`, so the control channel can read
-    /// and set them while the run goes on.
-    pub fn with_variables(mut self, variables: crate::SharedVariables) -> Self {
-        self.variables = variables;
-        self
-    }
-
-    /// Queries current output volume and mute state through bounded subprocesses.
-    ///
-    /// This performs no setter operations. A fixed-volume output can return an
-    /// unsupported value; malformed or unavailable state is reported as an error.
-    pub fn audio_snapshot(&mut self) -> Result<AudioSnapshot, String> {
-        Ok(AudioSnapshot {
-            output_volume: self.output_volume()?,
-            output_muted: self.output_muted()?,
-        })
-    }
-
-    /// Attempts to restore both fields of a validated snapshot independently.
-    ///
-    /// A failed volume setter does not prevent the mute setter from being
-    /// attempted. Errors are combined; neither setter is retried. Existing
-    /// cancellation remains effective, including during restoration. A successful
-    /// return reports system-tool completion, not a fresh state verification.
-    pub fn restore_audio_snapshot(&mut self, snapshot: &AudioSnapshot) -> Result<(), String> {
-        snapshot.validate()?;
-        let volume = self
-            .apple_script(format!(
-                "set volume output volume {}",
-                snapshot.output_volume
-            ))
-            .map_err(|error| format!("restoring output volume failed: {error}"));
-        let muted = self
-            .apple_script(format!("set volume output muted {}", snapshot.output_muted))
-            .map_err(|error| format!("restoring output mute failed: {error}"));
-        match (volume, muted) {
-            (Ok(_), Ok(_)) => Ok(()),
-            (Err(error), Ok(_)) | (Ok(_), Err(error)) => Err(error),
-            (Err(volume), Err(muted)) => Err(format!("{volume}; {muted}")),
-        }
-    }
-
-    fn run(&mut self, program: &'static str, args: Vec<String>) -> Result<Vec<u8>, String> {
-        self.run_request(ProcessRequest {
-            program,
-            args,
-            ..ProcessRequest::default()
-        })
-    }
-
-    fn run_request(&mut self, request: ProcessRequest) -> Result<Vec<u8>, String> {
-        self.run_checked(request).map(|output| output.stdout)
-    }
-
-    /// [`Self::run_checked`] whose failure message gives only the size of
-    /// stderr, never its text, for tools that receive user text in argv.
-    fn run_quiet(&mut self, request: ProcessRequest) -> Result<ProcessOutput, String> {
-        self.run_checked_with(request, false)
-    }
-
-    /// Runs one bounded request and fails on a nonzero exit; the successful
-    /// output keeps stderr for callers that report diagnostics.
-    fn run_checked(&mut self, request: ProcessRequest) -> Result<ProcessOutput, String> {
-        self.run_checked_with(request, true)
-    }
-
-    fn run_checked_with(
-        &mut self,
-        request: ProcessRequest,
-        stderr_in_errors: bool,
-    ) -> Result<ProcessOutput, String> {
-        let program = request.program;
-        let output = self.run_bounded(request)?;
-        if !output.success {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            let details = stderr.trim();
-            return Err(if details.is_empty() {
-                format!("{program}: {}", output.status)
-            } else if !stderr_in_errors {
-                format!(
-                    "{program}: {} (stderr: {} bytes, not shown)",
-                    output.status,
-                    output.stderr.len()
-                )
-            } else {
-                format!("{program}: {}: {details}", output.status)
-            });
-        }
-        Ok(output)
-    }
-
-    /// Runs one request within the timeout and output limits; the output is
-    /// returned whatever the exit status.
-    fn run_bounded(&mut self, request: ProcessRequest) -> Result<ProcessOutput, String> {
-        let program = request.program;
-        check_cancellation(self.runner.cancellation(), program)?;
-        if request
-            .stdin
-            .as_ref()
-            .is_some_and(|input| input.len() > STDIN_LIMIT)
-        {
-            return Err(format!("{program}: stdin exceeds {STDIN_LIMIT} bytes"));
-        }
-        // Only the fixed timer and terminal constants of this module set their
-        // own bound.
-        let timeout = if request.timeout.is_zero() {
-            PROCESS_TIMEOUT
-        } else {
-            request.timeout
-        };
-        let output = self.runner.run(&ProcessRequest {
-            timeout,
-            output_limit: OUTPUT_LIMIT,
-            ..request
-        })?;
-        if output.stdout.len() > OUTPUT_LIMIT || output.stderr.len() > OUTPUT_LIMIT {
-            return Err(format!(
-                "{program}: subprocess output exceeded {OUTPUT_LIMIT} bytes"
-            ));
-        }
-        Ok(output)
-    }
-
-    fn apple_script(&mut self, script: String) -> Result<Vec<u8>, String> {
-        self.run(OSASCRIPT, vec!["-e".into(), script])
-    }
-
-    fn pause(&mut self, duration: Duration) -> Result<(), String> {
-        self.sleeper.sleep(duration, self.runner.cancellation())
-    }
-
-    fn set_clipboard(&mut self, text: Vec<u8>) -> Result<(), String> {
-        self.run_request(ProcessRequest {
-            program: PBCOPY,
-            stdin: Some(text),
-            env: UTF8_ENV,
-            ..ProcessRequest::default()
-        })
-        .map(drop)
-    }
-
-    /// Returns the current clipboard text when it is small, plain text only.
-    ///
-    /// Any failure other than cancellation means "do not restore": the snippet
-    /// is still pasted, and the clipboard keeps it afterwards.
-    fn plain_text_clipboard(&mut self) -> Result<Option<Vec<u8>>, String> {
-        let info = match self.run_request(ProcessRequest {
-            program: OSASCRIPT,
-            args: vec!["-e".into(), "clipboard info".into()],
-            env: UTF8_ENV,
-            ..ProcessRequest::default()
-        }) {
-            Ok(info) => info,
-            Err(error) => {
-                check_cancellation(self.runner.cancellation(), OSASCRIPT).map_err(|_| error)?;
-                return Ok(None);
-            }
-        };
-        if has_sensitive_clipboard_marker(&info) || !is_plain_text_clipboard(&info) {
-            return Ok(None);
-        }
-        match self.run_request(ProcessRequest {
-            program: PBPASTE,
-            args: vec!["-Prefer".into(), "txt".into()],
-            env: UTF8_ENV,
-            ..ProcessRequest::default()
-        }) {
-            Ok(text)
-                if !text.is_empty()
-                    && text.len() <= STDIN_LIMIT
-                    && std::str::from_utf8(&text).is_ok() =>
-            {
-                Ok(Some(text))
-            }
-            Ok(_) => Ok(None),
-            Err(error) => {
-                check_cancellation(self.runner.cancellation(), PBPASTE).map_err(|_| error)?;
-                Ok(None)
-            }
-        }
-    }
-
-    /// Restores `saved` only while the clipboard still holds exactly `snippet`,
-    /// so anything copied after the snippet was placed is never overwritten.
-    ///
-    /// A failed re-read (other than cancellation) skips the restore: the
-    /// clipboard contents cannot be confirmed, so they are left alone.
-    fn restore_clipboard_if_unchanged(
-        &mut self,
-        snippet: &[u8],
-        saved: Vec<u8>,
-    ) -> Result<(), String> {
-        match self.run_request(ProcessRequest {
-            program: PBPASTE,
-            args: vec!["-Prefer".into(), "txt".into()],
-            env: UTF8_ENV,
-            ..ProcessRequest::default()
-        }) {
-            Ok(current) if current == snippet => self.set_clipboard(saved),
-            Ok(_) => Ok(()),
-            Err(error) => {
-                check_cancellation(self.runner.cancellation(), PBPASTE).map_err(|_| error)
-            }
-        }
-    }
-
-    fn paste_text(&mut self, text: &str, press_enter: bool) -> Result<(), String> {
-        let saved = self.plain_text_clipboard()?;
-        self.set_clipboard(text.as_bytes().to_vec())?;
-        // Fixed script lines only; the snippet travels through pbcopy's stdin.
-        let mut lines = vec![
-            "tell application \"System Events\"",
-            "keystroke \"v\" using {command down}",
-        ];
-        if press_enter {
-            lines.push("key code 36");
-        }
-        lines.push("end tell");
-        let pasted = self.run(
-            OSASCRIPT,
-            lines
-                .into_iter()
-                .flat_map(|line| ["-e".to_string(), line.to_string()])
-                .collect(),
-        );
-        let Some(saved) = saved else {
-            return pasted.map(drop);
-        };
-        if let Err(error) = pasted {
-            // Nothing pasted, so restore immediately; report both outcomes.
-            return Err(
-                match self.restore_clipboard_if_unchanged(text.as_bytes(), saved) {
-                    Ok(()) => error,
-                    Err(restore) => {
-                        format!("{error}; restoring the previous clipboard text failed: {restore}")
-                    }
-                },
-            );
-        }
-        self.pause(CLIPBOARD_RESTORE_DELAY)
-            .and_then(|()| self.restore_clipboard_if_unchanged(text.as_bytes(), saved))
-            .map_err(|error| {
-                format!(
-                    "text was pasted, but restoring the previous clipboard text failed: {error}"
-                )
-            })
-    }
-
-    fn execute(&mut self, action: &Action) -> Result<(), String> {
-        match action {
-            Action::Volume { delta } => {
-                // One process, not a query and a set: each osascript start costs
-                // about 0.12 s, and a spun knob or roller queues many steps.
-                self.apple_script(volume_step_script(*delta))?;
-            }
-            Action::SetVolume { percent } => {
-                self.apple_script(format!("set volume output volume {percent}"))?;
-            }
-            Action::SetMicInputVolume { percent } => {
-                self.apple_script(format!("set volume input volume {percent}"))?;
-            }
-            Action::VolumeFromPosition
-            | Action::MicInputVolumeFromPosition
-            | Action::ObsInputVolumeFromPosition { .. } => {
-                unreachable!("unresolved templates are rejected before host operations")
-            }
-            Action::ToggleMute => {
-                let target = !self.output_muted()?;
-                self.apple_script(format!("set volume output muted {target}"))?;
-            }
-            Action::Shortcut { key, modifiers } => {
-                if let Some(command) = crate::profile::media_key_command(key) {
-                    // The validator refuses modifiers on a media key, so the
-                    // event flags the script builds are exactly its own.
-                    debug_assert!(
-                        modifiers.is_empty(),
-                        "a media key cannot combine with modifiers"
-                    );
-                    self.media(command)?;
-                } else {
-                    self.apple_script(keystroke_script(key, modifiers))?;
-                }
-            }
-            Action::LaunchApp { bundle_id } => {
-                self.run(OPEN, vec!["-b".into(), bundle_id.clone()])?;
-            }
-            Action::OpenUrl { url } => {
-                // The validated URL starts with http:// or https://, so it cannot be
-                // read as an option; -u forces URL handling even if it matches a path.
-                self.run(OPEN, vec!["-u".into(), url.clone()])?;
-            }
-            Action::TerminalCommand {
-                app,
-                command,
-                directory,
-            } => self.terminal_command(*app, command, directory.as_deref())?,
-            Action::Media { command } => self.media(*command)?,
-            Action::System { command } => match command {
-                SystemCommand::Undo => {
-                    self.apple_script(keystroke_script("z", &[Modifier::Command]))?;
-                }
-                SystemCommand::Redo => {
-                    self.apple_script(keystroke_script(
-                        "z",
-                        &[Modifier::Command, Modifier::Shift],
-                    ))?;
-                }
-                SystemCommand::Screenshot => {
-                    self.run(SCREENCAPTURE, vec!["-c".into()])?;
-                }
-            },
-            Action::Text { text, press_enter } => self.paste_text(text, *press_enter)?,
-            Action::Macro { steps } => self.macro_keys(steps)?,
-            Action::Profile { .. } => {
-                // The service never owns the profile list; `process_work`
-                // reports the request to a session manager instead.
-                return Err(
-                    "profile switching is handled by the OpenStreamHub session manager, not the macOS backend; no action was taken"
-                        .into(),
-                );
-            }
-            Action::Timer { .. } => {
-                // The countdown belongs to the service worker (`process_work`),
-                // which calls `timer_alert` only when it ends.
-                return Err(
-                    "timer countdowns are run by the service worker, not the macOS backend; no action was taken"
-                        .into(),
-                );
-            }
-            Action::ObsScene { .. }
-            | Action::ObsVirtualCamera { .. }
-            | Action::ObsStream { .. }
-            | Action::ObsRecord { .. }
-            | Action::ObsReplayBuffer { .. }
-            | Action::ObsStudioMode { .. }
-            | Action::ObsTransition
-            | Action::ObsScreenshot
-            | Action::ObsFilter { .. }
-            | Action::ObsSourceVisibility { .. }
-            | Action::ObsSceneCollection { .. }
-            | Action::ObsProfile { .. }
-            | Action::ObsInputMute { .. }
-            | Action::ObsAdjustInputVolume { .. }
-            | Action::ObsMediaSource { .. }
-            | Action::ObsSetInputVolume { .. } => self.obs_action(action, None)?,
-            Action::StreamlabsRecord
-            | Action::StreamlabsStream { .. }
-            | Action::StreamlabsStudioMode
-            | Action::StreamlabsTransition
-            | Action::StreamlabsScene { .. }
-            | Action::StreamlabsSourceVisibility { .. }
-            | Action::StreamlabsAudio { .. } => self.streamlabs_action(action, None)?,
-            Action::MultiAction { actions } => {
-                let deadline = self.sleeper.now() + MULTI_ACTION_DEADLINE;
-                self.run_steps(actions, "multi_action", deadline)?;
-            }
-            Action::SetVariable { name, value } => self.variables.set(name, value.clone())?,
-            Action::ToggleVariable { name } => self.variables.toggle(name)?,
-            Action::AddToVariable { name, amount } => self.variables.add(name, *amount)?,
-            Action::Conditional { .. } => {
-                let deadline = self.sleeper.now() + MULTI_ACTION_DEADLINE;
-                self.run_conditional(action, deadline)?;
-            }
-        }
-        Ok(())
-    }
-
-    /// Reads the condition of a `conditional`, then runs the branch it picks.
-    /// A nested `conditional` shares the outer one's `deadline`.
-    fn run_conditional(
-        &mut self,
-        action: &Action,
-        deadline: std::time::Instant,
-    ) -> Result<(), String> {
-        let Action::Conditional {
-            when,
-            then,
-            otherwise,
-        } = action
-        else {
-            return Err("not a conditional".into());
-        };
-        let holds = self.evaluate_condition(when, deadline)?;
-        let (branch, label) = if holds {
-            (then, "conditional then")
-        } else {
-            (otherwise, "conditional else")
-        };
-        self.run_steps(branch, label, deadline)
-    }
-
-    /// Runs `steps` in order with fixed spacing, all inside `deadline`; the
-    /// first failure stops the rest. `label` names the sequence in errors.
-    fn run_steps(
-        &mut self,
-        steps: &[Action],
-        label: &str,
-        deadline: std::time::Instant,
-    ) -> Result<(), String> {
-        let count = steps.len();
-        for (index, step) in steps.iter().enumerate() {
-            if index > 0 {
-                self.pause(STEP_SPACING).map_err(|error| {
-                    format!(
-                        "{label} stopped before step {} of {count}: {error}",
-                        index + 1
-                    )
-                })?;
-            }
-            if self.sleeper.now() >= deadline {
-                return Err(format!(
-                    "{label} stopped before step {} of {count} ({}): the sequence exceeded its {} s overall deadline; earlier steps already took effect",
-                    index + 1,
-                    step.type_name(),
-                    MULTI_ACTION_DEADLINE.as_secs()
-                ));
-            }
-            // An OBS step gets only what is left of the sequence's deadline,
-            // so a slow OBS cannot push the sequence past it.
-            let result = if matches!(step, Action::Conditional { .. }) {
-                self.run_conditional(step, deadline)
-            } else if step.uses_obs() {
-                self.obs_action(step, Some(deadline))
-            } else if step.uses_streamlabs() {
-                self.streamlabs_action(step, Some(deadline))
-            } else {
-                self.execute(step)
-            };
-            result.map_err(|error| {
-                format!(
-                    "{label} step {} of {count} ({}) failed: {error}",
-                    index + 1,
-                    step.type_name()
-                )
-            })?;
-        }
-        Ok(())
-    }
-
-    /// Whether `condition` holds right now. An `all` or `any` reads every
-    /// member in order, without stopping early, so a member that cannot be
-    /// read fails the press whatever the others say. A failure names the
-    /// member that could not be read and says no branch ran.
-    fn evaluate_condition(
-        &mut self,
-        condition: &crate::profile::Condition,
-        deadline: std::time::Instant,
-    ) -> Result<bool, String> {
-        use crate::profile::Condition;
-        match condition {
-            Condition::All(items) | Condition::Any(items) => {
-                let mut results = Vec::with_capacity(items.len());
-                for item in items {
-                    results.push(self.evaluate_condition(item, deadline)?);
-                }
-                Ok(if matches!(condition, Condition::All(_)) {
-                    results.iter().all(|holds| *holds)
-                } else {
-                    results.iter().any(|holds| *holds)
-                })
-            }
-            leaf => if leaf.uses_obs() {
-                self.condition_holds(leaf, deadline)
-            } else {
-                self.system_condition_holds(leaf)
-            }
-            .map_err(|error| {
-                format!(
-                    "conditional could not read {}: {error}; neither branch ran",
-                    leaf.name()
-                )
-            }),
-        }
-    }
-
-    /// Reads a condition about the default output from macOS.
-    fn system_condition_holds(
-        &mut self,
-        condition: &crate::profile::Condition,
-    ) -> Result<bool, String> {
-        use crate::profile::Condition;
-        match condition {
-            Condition::OutputMuted(expected) => Ok(self.output_muted()? == *expected),
-            Condition::OutputVolumeAtLeast(percent) => Ok(self.output_volume()? >= *percent),
-            Condition::TimerRunning(expected) => Ok(self.service_state.timer_running == *expected),
-            Condition::VariableIs { name, value } => match self.variables.get(name) {
-                Some(current) if current.kind() == value.kind() => Ok(current == *value),
-                Some(current) => Err(format!(
-                    "variable {name} is {}, not {}",
-                    current.kind().name(),
-                    value.kind().name()
-                )),
-                None => Err(format!("variable {name} is not declared")),
-            },
-            Condition::VariableAtLeast { name, value } => match self.variables.get(name) {
-                Some(VariableValue::Number(current)) => Ok(current >= *value),
-                Some(other) => Err(format!(
-                    "variable {name} is {}, not number",
-                    other.kind().name()
-                )),
-                None => Err(format!("variable {name} is not declared")),
-            },
-            Condition::FocusedApp(bundle_id) => {
-                Ok(self.frontmost_bundle_id()?.eq_ignore_ascii_case(bundle_id))
-            }
-            _ => Err("this condition is read from OBS".into()),
-        }
-    }
-
-    /// Reads a condition from OBS within what is left of `deadline`.
-    fn condition_holds(
-        &self,
-        condition: &crate::profile::Condition,
-        deadline: std::time::Instant,
-    ) -> Result<bool, String> {
-        let obs = self.obs.as_ref().ok_or(OBS_UNAVAILABLE)?;
-        let remaining = deadline.saturating_duration_since(self.sleeper.now());
-        if remaining.is_zero() {
-            return Err("the overall deadline has passed; OBS was not contacted".into());
-        }
-        obs.clone()
-            .with_timeout(remaining)
-            .condition_holds(condition)
-    }
-
-    /// Runs an OBS action within `deadline` (on the sleeper's clock) when
-    /// given, and never beyond the client's own 3 s limit. A deadline that has
-    /// already passed fails without connecting.
-    fn obs_action(
-        &self,
-        action: &Action,
-        deadline: Option<std::time::Instant>,
-    ) -> Result<(), String> {
-        let obs = self.obs.as_ref().ok_or(OBS_UNAVAILABLE)?;
-        let Some(deadline) = deadline else {
-            return obs.run(action);
-        };
-        let remaining = deadline.saturating_duration_since(self.sleeper.now());
-        if remaining.is_zero() {
-            return Err(format!(
-                "the multi_action's {} s overall deadline has passed; OBS was not contacted",
-                MULTI_ACTION_DEADLINE.as_secs()
-            ));
-        }
-        obs.clone().with_timeout(remaining).run(action)
-    }
-
-    /// Runs a Streamlabs action like [`MacOsDispatcher::obs_action`] runs an
-    /// OBS one: within `deadline` when given, never beyond the client's 3 s.
-    fn streamlabs_action(
-        &self,
-        action: &Action,
-        deadline: Option<std::time::Instant>,
-    ) -> Result<(), String> {
-        let streamlabs = self.streamlabs.as_ref().ok_or(STREAMLABS_UNAVAILABLE)?;
-        let Some(deadline) = deadline else {
-            return streamlabs.run(action);
-        };
-        let remaining = deadline.saturating_duration_since(self.sleeper.now());
-        if remaining.is_zero() {
-            return Err(format!(
-                "the multi_action's {} s overall deadline has passed; Streamlabs was not contacted",
-                MULTI_ACTION_DEADLINE.as_secs()
-            ));
-        }
-        streamlabs.clone().with_timeout(remaining).run(action)
-    }
-
-    /// Opens a new window of `app` running the command line (see
-    /// [`TERMINAL_SCRIPT`] and [`ITERM2_SCRIPT`]). The failure never carries
-    /// stderr, which could echo the command.
-    fn terminal_command(
-        &mut self,
-        app: TerminalApp,
-        command: &str,
-        directory: Option<&str>,
-    ) -> Result<(), String> {
-        let name = match app {
-            TerminalApp::Terminal => "Terminal",
-            TerminalApp::Iterm2 => "iTerm2",
-        };
-        self.run_quiet(ProcessRequest {
-            program: OSASCRIPT,
-            args: terminal_script_args(app, terminal_shell_line(command, directory)),
-            env: UTF8_ENV,
-            timeout: TERMINAL_TIMEOUT,
-            ..ProcessRequest::default()
-        })
-        .map(drop)
-        .map_err(|error| {
-            format!(
-                "{name} could not open a window running the command; check that it is installed and that this app may control it (System Settings > Privacy & Security > Automation): {error}"
-            )
-        })
-    }
-
-    /// Posts a media key, or stops Music and Spotify, through one fixed
-    /// `osascript` JavaScript run (see [`MEDIA_KEY_SCRIPT`] and
-    /// [`MEDIA_STOP_SCRIPT`]). No profile text reaches the process: the only
-    /// argv item beyond the fixed lines is a key type from a closed set. A
-    /// failure names a fixed cause and never contains stderr text.
-    fn media(&mut self, command: MediaCommand) -> Result<(), String> {
-        let (script, key_type) = match command {
-            MediaCommand::PlayPause => (MEDIA_KEY_SCRIPT, Some(NX_KEYTYPE_PLAY)),
-            MediaCommand::NextTrack => (MEDIA_KEY_SCRIPT, Some(NX_KEYTYPE_NEXT)),
-            MediaCommand::PreviousTrack => (MEDIA_KEY_SCRIPT, Some(NX_KEYTYPE_PREVIOUS)),
-            MediaCommand::Stop => (MEDIA_STOP_SCRIPT, None),
-        };
-        let mut args = vec!["-l".to_string(), "JavaScript".to_string()];
-        for line in script {
-            args.extend(["-e".to_string(), line.to_string()]);
-        }
-        if let Some(key_type) = key_type {
-            // `--` ends osascript's options; the script checks both items again.
-            let access = if std::mem::replace(&mut self.media_access_requested, true) {
-                "check"
-            } else {
-                "request"
-            };
-            args.extend(["--".to_string(), key_type.to_string(), access.to_string()]);
-        }
-        let output = self.run_bounded(ProcessRequest {
-            program: OSASCRIPT,
-            args,
-            ..ProcessRequest::default()
-        })?;
-        if output.success {
-            Ok(())
-        } else {
-            Err(media_failure(&output))
-        }
-    }
-
-    /// Replays a `macro` through one fixed `osascript` JavaScript run (see
-    /// [`MACRO_SCRIPT`]). The steps travel on stdin as validated integers and
-    /// the subprocess timeout is the macro's own duration plus a margin, so a
-    /// long macro neither blocks forever nor rushes its pauses. A failure
-    /// names a fixed cause and never contains stderr text; the keystrokes up
-    /// to the failure may already have taken effect.
-    fn macro_keys(&mut self, steps: &[MacroStep]) -> Result<(), String> {
-        let mut args = vec!["-l".to_string(), "JavaScript".to_string()];
-        for line in MACRO_SCRIPT {
-            args.extend(["-e".to_string(), line.to_string()]);
-        }
-        let output = self.run_bounded(ProcessRequest {
-            program: OSASCRIPT,
-            args,
-            stdin: Some(macro_payload(steps)?),
-            timeout: macro_duration(steps) + MACRO_TIMEOUT_MARGIN,
-            ..ProcessRequest::default()
-        })?;
-        if output.success {
-            Ok(())
-        } else {
-            Err(macro_failure(&output))
-        }
-    }
-
-    fn query(&mut self, property: &str) -> Result<String, String> {
-        let output = self.apple_script(format!("{property} of (get volume settings)"))?;
-        let text = String::from_utf8(output)
-            .map_err(|_| format!("{OSASCRIPT}: invalid UTF-8 in {property} response"))?;
-        Ok(text.trim().to_owned())
-    }
-
-    /// The bundle identifier of the frontmost application, from System
-    /// Events (the same Automation permission the keystroke actions use).
-    fn frontmost_bundle_id(&mut self) -> Result<String, String> {
-        let output = self.apple_script(FRONTMOST_APP_SCRIPT.into())?;
-        let response = String::from_utf8(output)
-            .map_err(|_| format!("{OSASCRIPT}: invalid UTF-8 in the frontmost app response"))?
-            .trim()
-            .to_owned();
-        crate::profile::validate_bundle_id(&response).map_err(|_| {
-            format!("{OSASCRIPT}: the frontmost app has no usable bundle identifier ({response:?})")
-        })?;
-        Ok(response)
-    }
-
-    fn output_volume(&mut self) -> Result<u8, String> {
-        let response = self.query("output volume")?;
-        response
-            .parse::<u8>()
-            .ok()
-            .filter(|value| *value <= 100)
-            .ok_or_else(|| format!("{OSASCRIPT}: invalid output volume response {response:?}"))
-    }
-
-    fn output_muted(&mut self) -> Result<bool, String> {
-        let response = self.query("output muted")?;
-        match response.as_str() {
-            "true" => Ok(true),
-            "false" => Ok(false),
-            _ => Err(format!(
-                "{OSASCRIPT}: invalid output muted response {response:?}"
-            )),
-        }
-    }
-}
-
-impl Default for MacOsDispatcher {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl ActionDispatcher for MacOsDispatcher {
-    fn set_service_state(&mut self, state: ServiceState) {
-        // A variable keeps its value while its name and kind stay; anything
-        // else starts at the declared value, and an undeclared one is dropped.
-        self.variables.declare(&state.variables);
-        self.service_state = state;
-    }
-
-    fn dispatch(&mut self, action: &Action) -> Result<(), String> {
-        // Validate even when the caller did not use the profile loader. This
-        // also validates every multi_action step before the first one runs.
-        action.validate_executable()?;
-        self.execute(action)
-    }
-
-    fn unavailable(&self, action: &Action) -> Option<&'static str> {
-        (self.obs.is_none() && action.uses_obs())
-            .then_some(OBS_UNAVAILABLE)
-            .or_else(|| {
-                (self.streamlabs.is_none() && action.uses_streamlabs())
-                    .then_some(STREAMLABS_UNAVAILABLE)
-            })
-    }
-
-    /// Posts a notification (3 s bound), then plays the sound (6 s bound), each
-    /// in its own subprocess that is killed and reaped on timeout or
-    /// cancellation. Both are attempted independently and their errors
-    /// combined; neither is retried. `osascript` exits 0 even when macOS
-    /// refuses the notification (for example "NSNotificationCenter connection
-    /// invalid"), so a successful run that printed to stderr is returned as a
-    /// fixed-category warning. Neither warnings nor errors ever contain stderr
-    /// text, which could echo the label.
-    fn timer_alert(&mut self, alert: &TimerAlert) -> Result<Option<String>, String> {
-        alert.validate()?;
-        let mut args = Vec::new();
-        for line in TIMER_NOTIFICATION_SCRIPT {
-            args.extend(["-e".to_string(), line.to_string()]);
-        }
-        // `--` ends osascript's options; the fixed title comes first, so the
-        // message is never read as an option even if it starts with `-`.
-        args.extend(["--".to_string(), TIMER_TITLE.to_string(), alert.message()]);
-        let notification = self
-            .run_quiet(ProcessRequest {
-                program: OSASCRIPT,
-                args,
-                env: UTF8_ENV,
-                timeout: TIMER_NOTIFICATION_TIMEOUT,
-                ..ProcessRequest::default()
-            })
-            .map(|output| notification_warning(&output.stderr))
-            .map_err(|error| format!("timer notification failed: {error}"));
-        let sound = match alert.sound.path() {
-            None => Ok(()),
-            Some(path) => self
-                .run_quiet(ProcessRequest {
-                    program: AFPLAY,
-                    args: vec![path.to_string()],
-                    timeout: TIMER_SOUND_TIMEOUT,
-                    ..ProcessRequest::default()
-                })
-                .map(drop)
-                .map_err(|error| format!("timer sound failed: {error}")),
-        };
-        match (notification, sound) {
-            (Ok(warning), Ok(())) => Ok(warning),
-            (Err(error), Ok(())) | (Ok(_), Err(error)) => Err(error),
-            (Err(notification), Err(sound)) => Err(format!("{notification}; {sound}")),
-        }
-    }
-
-    /// A second system dispatcher cancelled by `cancel`, for an alert thread.
-    /// It runs only `osascript` and `afplay`, so it gets no OBS client.
-    fn timer_alerter(&mut self, cancel: Arc<AtomicBool>) -> Option<Box<dyn TimerAlerter>> {
-        Some(Box::new(MacOsDispatcher {
-            runner: self.runner.fork(cancel)?,
-            sleeper: Box::new(SystemSleeper),
-            obs: None,
-            streamlabs: None,
-            media_access_requested: false,
-            service_state: ServiceState::default(),
-            variables: Default::default(),
-        }))
-    }
-}
-
-impl TimerAlerter for MacOsDispatcher {
-    fn alert(&mut self, alert: &TimerAlert) -> Result<Option<String>, String> {
-        self.timer_alert(alert)
-    }
 }
 
 /// Classifies the stderr of a notification that exited 0 into a fixed
@@ -1351,7 +462,7 @@ fn volume_step_script(delta: i16) -> String {
 /// ASCII alphanumeric character or space and cannot introduce AppleScript
 /// syntax; a named key is sent as an integer from the closed key-code table.
 fn keystroke_script(key: &str, modifiers: &[Modifier]) -> String {
-    let mut script = match crate::profile::named_key_code(key) {
+    let mut script = match keys::named_key_code(key) {
         Some(code) => format!("tell application \"System Events\" to key code {code}"),
         None => {
             debug_assert!(
@@ -1404,343 +515,504 @@ fn has_sensitive_clipboard_marker(info: &[u8]) -> bool {
         .any(|marker| info.contains(marker))
 }
 
-/// Waits between steps and reads the time; injected so tests never sleep.
-trait Sleeper: Send {
-    /// Monotonic time used for the `multi_action` deadline.
-    fn now(&self) -> std::time::Instant {
-        std::time::Instant::now()
+/// Executes validated actions on macOS. Shortcut and media-key execution may
+/// require the user's Accessibility and Automation permissions for the
+/// invoking application.
+///
+/// Failed or timed-out actions are returned to the caller and are never retried;
+/// an action may already have taken effect before its process reports a failure.
+pub type MacOsDispatcher = HostDispatcher<MacOsHost>;
+
+impl HostDispatcher<MacOsHost> {
+    /// Creates a dispatcher without launching subprocesses or requesting permissions.
+    pub fn new() -> Self {
+        Self::with_parts(
+            Box::new(SystemProcessRunner { cancellation: None }),
+            Box::new(SystemSleeper),
+            MacOsHost::default(),
+            None,
+        )
     }
 
-    fn sleep(
-        &mut self,
-        duration: Duration,
-        cancellation: Option<&AtomicBool>,
-    ) -> Result<(), String>;
+    /// Creates a dispatcher that stops starting actions when the shared flag is set.
+    ///
+    /// Cancellation also stops monitoring an in-flight system-tool process and
+    /// attempts bounded kill/reap cleanup. An action may already have taken effect.
+    pub fn with_cancellation(cancellation: Arc<AtomicBool>) -> Self {
+        Self::with_parts(
+            Box::new(SystemProcessRunner {
+                cancellation: Some(Arc::clone(&cancellation)),
+            }),
+            Box::new(SystemSleeper),
+            MacOsHost::default(),
+            Some(cancellation),
+        )
+    }
 }
 
-struct SystemSleeper;
+#[cfg(test)]
+impl HostDispatcher<MacOsHost> {
+    /// A dispatcher over test doubles for the runner and the clock.
+    fn from_parts(
+        runner: Box<dyn crate::host::process::ProcessRunner>,
+        sleeper: Box<dyn crate::host::process::Sleeper>,
+    ) -> Self {
+        Self::with_parts(runner, sleeper, MacOsHost::default(), None)
+    }
+}
 
-impl Sleeper for SystemSleeper {
-    fn sleep(
-        &mut self,
-        duration: Duration,
-        cancellation: Option<&AtomicBool>,
-    ) -> Result<(), String> {
-        let deadline = std::time::Instant::now() + duration;
-        loop {
-            check_cancellation(cancellation, "action pause")?;
-            let now = std::time::Instant::now();
-            if now >= deadline {
-                return Ok(());
+impl Default for HostDispatcher<MacOsHost> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// The macOS host: system tools started through the dispatcher's [`Process`].
+#[derive(Debug, Default)]
+pub struct MacOsHost {
+    /// Set once a media key has asked macOS for the Accessibility prompt;
+    /// later media keys only check the permission (see [`MEDIA_KEY_SCRIPT`]).
+    media_access_requested: bool,
+}
+
+impl MacOsHost {
+    fn apple_script(&mut self, cx: &mut Process, script: String) -> Result<Vec<u8>, String> {
+        cx.run(OSASCRIPT, vec!["-e".into(), script])
+    }
+
+    fn set_clipboard(&mut self, cx: &mut Process, text: Vec<u8>) -> Result<(), String> {
+        cx.run_request(ProcessRequest {
+            program: PBCOPY,
+            stdin: Some(text),
+            env: UTF8_ENV,
+            ..ProcessRequest::default()
+        })
+        .map(drop)
+    }
+
+    /// Returns the current clipboard text when it is small, plain text only.
+    ///
+    /// Any failure other than cancellation means "do not restore": the snippet
+    /// is still pasted, and the clipboard keeps it afterwards.
+    fn plain_text_clipboard(&mut self, cx: &mut Process) -> Result<Option<Vec<u8>>, String> {
+        let info = match cx.run_request(ProcessRequest {
+            program: OSASCRIPT,
+            args: vec!["-e".into(), "clipboard info".into()],
+            env: UTF8_ENV,
+            ..ProcessRequest::default()
+        }) {
+            Ok(info) => info,
+            Err(error) => {
+                check_cancellation(cx.cancellation(), OSASCRIPT).map_err(|_| error)?;
+                return Ok(None);
             }
-            std::thread::sleep((deadline - now).min(Duration::from_millis(10)));
+        };
+        if has_sensitive_clipboard_marker(&info) || !is_plain_text_clipboard(&info) {
+            return Ok(None);
+        }
+        match cx.run_request(ProcessRequest {
+            program: PBPASTE,
+            args: vec!["-Prefer".into(), "txt".into()],
+            env: UTF8_ENV,
+            ..ProcessRequest::default()
+        }) {
+            Ok(text)
+                if !text.is_empty()
+                    && text.len() <= STDIN_LIMIT
+                    && std::str::from_utf8(&text).is_ok() =>
+            {
+                Ok(Some(text))
+            }
+            Ok(_) => Ok(None),
+            Err(error) => {
+                check_cancellation(cx.cancellation(), PBPASTE).map_err(|_| error)?;
+                Ok(None)
+            }
+        }
+    }
+
+    /// Restores `saved` only while the clipboard still holds exactly `snippet`,
+    /// so anything copied after the snippet was placed is never overwritten.
+    ///
+    /// A failed re-read (other than cancellation) skips the restore: the
+    /// clipboard contents cannot be confirmed, so they are left alone.
+    fn restore_clipboard_if_unchanged(
+        &mut self,
+        cx: &mut Process,
+        snippet: &[u8],
+        saved: Vec<u8>,
+    ) -> Result<(), String> {
+        match cx.run_request(ProcessRequest {
+            program: PBPASTE,
+            args: vec!["-Prefer".into(), "txt".into()],
+            env: UTF8_ENV,
+            ..ProcessRequest::default()
+        }) {
+            Ok(current) if current == snippet => self.set_clipboard(cx, saved),
+            Ok(_) => Ok(()),
+            Err(error) => check_cancellation(cx.cancellation(), PBPASTE).map_err(|_| error),
+        }
+    }
+
+    fn paste_text(
+        &mut self,
+        cx: &mut Process,
+        text: &str,
+        press_enter: bool,
+    ) -> Result<(), String> {
+        let saved = self.plain_text_clipboard(cx)?;
+        self.set_clipboard(cx, text.as_bytes().to_vec())?;
+        // Fixed script lines only; the snippet travels through pbcopy's stdin.
+        let mut lines = vec![
+            "tell application \"System Events\"",
+            "keystroke \"v\" using {command down}",
+        ];
+        if press_enter {
+            lines.push("key code 36");
+        }
+        lines.push("end tell");
+        let pasted = cx.run(
+            OSASCRIPT,
+            lines
+                .into_iter()
+                .flat_map(|line| ["-e".to_string(), line.to_string()])
+                .collect(),
+        );
+        let Some(saved) = saved else {
+            return pasted.map(drop);
+        };
+        if let Err(error) = pasted {
+            // Nothing pasted, so restore immediately; report both outcomes.
+            return Err(
+                match self.restore_clipboard_if_unchanged(cx, text.as_bytes(), saved) {
+                    Ok(()) => error,
+                    Err(restore) => {
+                        format!("{error}; restoring the previous clipboard text failed: {restore}")
+                    }
+                },
+            );
+        }
+        cx.pause(CLIPBOARD_RESTORE_DELAY)
+            .and_then(|()| self.restore_clipboard_if_unchanged(cx, text.as_bytes(), saved))
+            .map_err(|error| {
+                format!(
+                    "text was pasted, but restoring the previous clipboard text failed: {error}"
+                )
+            })
+    }
+
+    /// Opens a new window of `app` running the command line (see
+    /// [`TERMINAL_SCRIPT`] and [`ITERM2_SCRIPT`]). The failure never carries
+    /// stderr, which could echo the command.
+    fn open_terminal(
+        &mut self,
+        cx: &mut Process,
+        app: TerminalApp,
+        command: &str,
+        directory: Option<&str>,
+    ) -> Result<(), String> {
+        let name = match app {
+            TerminalApp::Terminal => "Terminal",
+            TerminalApp::Iterm2 => "iTerm2",
+        };
+        cx.run_quiet(ProcessRequest {
+            program: OSASCRIPT,
+            args: terminal_script_args(app, terminal_shell_line(command, directory)),
+            env: UTF8_ENV,
+            timeout: TERMINAL_TIMEOUT,
+            ..ProcessRequest::default()
+        })
+        .map(drop)
+        .map_err(|error| {
+            format!(
+                "{name} could not open a window running the command; check that it is installed and that this app may control it (System Settings > Privacy & Security > Automation): {error}"
+            )
+        })
+    }
+
+    /// Posts a media key, or stops Music and Spotify, through one fixed
+    /// `osascript` JavaScript run (see [`MEDIA_KEY_SCRIPT`] and
+    /// [`MEDIA_STOP_SCRIPT`]). No profile text reaches the process: the only
+    /// argv item beyond the fixed lines is a key type from a closed set. A
+    /// failure names a fixed cause and never contains stderr text.
+    fn post_media(&mut self, cx: &mut Process, command: MediaCommand) -> Result<(), String> {
+        let (script, key_type) = match command {
+            MediaCommand::PlayPause => (MEDIA_KEY_SCRIPT, Some(NX_KEYTYPE_PLAY)),
+            MediaCommand::NextTrack => (MEDIA_KEY_SCRIPT, Some(NX_KEYTYPE_NEXT)),
+            MediaCommand::PreviousTrack => (MEDIA_KEY_SCRIPT, Some(NX_KEYTYPE_PREVIOUS)),
+            MediaCommand::Stop => (MEDIA_STOP_SCRIPT, None),
+        };
+        let mut args = vec!["-l".to_string(), "JavaScript".to_string()];
+        for line in script {
+            args.extend(["-e".to_string(), line.to_string()]);
+        }
+        if let Some(key_type) = key_type {
+            // `--` ends osascript's options; the script checks both items again.
+            let access = if std::mem::replace(&mut self.media_access_requested, true) {
+                "check"
+            } else {
+                "request"
+            };
+            args.extend(["--".to_string(), key_type.to_string(), access.to_string()]);
+        }
+        let output = cx.run_bounded(ProcessRequest {
+            program: OSASCRIPT,
+            args,
+            ..ProcessRequest::default()
+        })?;
+        if output.success {
+            Ok(())
+        } else {
+            Err(media_failure(&output))
+        }
+    }
+
+    /// Replays a `macro` through one fixed `osascript` JavaScript run (see
+    /// [`MACRO_SCRIPT`]). The steps travel on stdin as validated integers and
+    /// the subprocess timeout is the macro's own duration plus a margin, so a
+    /// long macro neither blocks forever nor rushes its pauses. A failure
+    /// names a fixed cause and never contains stderr text; the keystrokes up
+    /// to the failure may already have taken effect.
+    fn replay_macro(&mut self, cx: &mut Process, steps: &[MacroStep]) -> Result<(), String> {
+        let mut args = vec!["-l".to_string(), "JavaScript".to_string()];
+        for line in MACRO_SCRIPT {
+            args.extend(["-e".to_string(), line.to_string()]);
+        }
+        let output = cx.run_bounded(ProcessRequest {
+            program: OSASCRIPT,
+            args,
+            stdin: Some(macro_payload(steps)?),
+            timeout: macro_duration(steps) + MACRO_TIMEOUT_MARGIN,
+            ..ProcessRequest::default()
+        })?;
+        if output.success {
+            Ok(())
+        } else {
+            Err(macro_failure(&output))
+        }
+    }
+
+    fn query(&mut self, cx: &mut Process, property: &str) -> Result<String, String> {
+        let output = self.apple_script(cx, format!("{property} of (get volume settings)"))?;
+        let text = String::from_utf8(output)
+            .map_err(|_| format!("{OSASCRIPT}: invalid UTF-8 in {property} response"))?;
+        Ok(text.trim().to_owned())
+    }
+
+    /// The bundle identifier of the frontmost application, from System
+    /// Events (the same Automation permission the keystroke actions use).
+    fn frontmost_bundle_id(&mut self, cx: &mut Process) -> Result<String, String> {
+        let output = self.apple_script(cx, FRONTMOST_APP_SCRIPT.into())?;
+        let response = String::from_utf8(output)
+            .map_err(|_| format!("{OSASCRIPT}: invalid UTF-8 in the frontmost app response"))?
+            .trim()
+            .to_owned();
+        crate::profile::validate_bundle_id(&response).map_err(|_| {
+            format!("{OSASCRIPT}: the frontmost app has no usable bundle identifier ({response:?})")
+        })?;
+        Ok(response)
+    }
+
+    fn query_output_volume(&mut self, cx: &mut Process) -> Result<u8, String> {
+        let response = self.query(cx, "output volume")?;
+        response
+            .parse::<u8>()
+            .ok()
+            .filter(|value| *value <= 100)
+            .ok_or_else(|| format!("{OSASCRIPT}: invalid output volume response {response:?}"))
+    }
+
+    fn query_output_muted(&mut self, cx: &mut Process) -> Result<bool, String> {
+        let response = self.query(cx, "output muted")?;
+        match response.as_str() {
+            "true" => Ok(true),
+            "false" => Ok(false),
+            _ => Err(format!(
+                "{OSASCRIPT}: invalid output muted response {response:?}"
+            )),
         }
     }
 }
 
-#[derive(Debug, Default, PartialEq, Eq)]
-struct ProcessRequest {
-    program: &'static str,
-    args: Vec<String>,
-    /// Bytes written to stdin before monitoring; `None` connects /dev/null.
-    stdin: Option<Vec<u8>>,
-    /// Fixed variables added to the inherited environment.
-    env: &'static [(&'static str, &'static str)],
-    timeout: Duration,
-    output_limit: usize,
-}
-
-struct ProcessOutput {
-    success: bool,
-    status: String,
-    stdout: Vec<u8>,
-    stderr: Vec<u8>,
-}
-
-trait ProcessRunner: Send {
-    fn run(&mut self, request: &ProcessRequest) -> Result<ProcessOutput, String>;
-
-    fn cancellation(&self) -> Option<&AtomicBool> {
-        None
+impl AudioHost for MacOsHost {
+    fn step_output_volume(&mut self, cx: &mut Process, delta: i16) -> Result<(), String> {
+        // One process, not a query and a set: each osascript start costs
+        // about 0.12 s, and a spun knob or roller queues many steps.
+        self.apple_script(cx, volume_step_script(delta)).map(drop)
     }
 
-    /// An independent system runner cancelled by `cancellation`, if supported.
-    fn fork(&self, cancellation: Arc<AtomicBool>) -> Option<Box<dyn ProcessRunner>> {
-        let _ = cancellation;
-        None
+    fn set_output_volume(&mut self, cx: &mut Process, percent: u8) -> Result<(), String> {
+        self.apple_script(cx, format!("set volume output volume {percent}"))
+            .map(drop)
+    }
+
+    fn set_input_volume(&mut self, cx: &mut Process, percent: u8) -> Result<(), String> {
+        self.apple_script(cx, format!("set volume input volume {percent}"))
+            .map(drop)
+    }
+
+    fn output_volume(&mut self, cx: &mut Process) -> Result<u8, String> {
+        self.query_output_volume(cx)
+    }
+
+    fn output_muted(&mut self, cx: &mut Process) -> Result<bool, String> {
+        self.query_output_muted(cx)
+    }
+
+    fn set_output_muted(&mut self, cx: &mut Process, muted: bool) -> Result<(), String> {
+        self.apple_script(cx, format!("set volume output muted {muted}"))
+            .map(drop)
     }
 }
 
-struct SystemProcessRunner {
-    cancellation: Option<Arc<AtomicBool>>,
-}
+impl KeyInjector for MacOsHost {
+    fn shortcut(
+        &mut self,
+        cx: &mut Process,
+        key: &str,
+        modifiers: &[Modifier],
+    ) -> Result<(), String> {
+        self.apple_script(cx, keystroke_script(key, modifiers))
+            .map(drop)
+    }
 
-impl SystemProcessRunner {
-    fn fork_runner(cancellation: Arc<AtomicBool>) -> Option<Box<dyn ProcessRunner>> {
-        Some(Box::new(Self {
-            cancellation: Some(cancellation),
-        }))
+    fn media(&mut self, cx: &mut Process, command: MediaCommand) -> Result<(), String> {
+        self.post_media(cx, command)
+    }
+
+    fn text(&mut self, cx: &mut Process, text: &str, press_enter: bool) -> Result<(), String> {
+        self.paste_text(cx, text, press_enter)
+    }
+
+    fn macro_keys(&mut self, cx: &mut Process, steps: &[MacroStep]) -> Result<(), String> {
+        self.replay_macro(cx, steps)
     }
 }
 
-fn check_cancellation(cancellation: Option<&AtomicBool>, program: &str) -> Result<(), String> {
-    if cancellation.is_some_and(|flag| flag.load(Ordering::Acquire)) {
-        Err(format!("{program}: action execution cancelled"))
-    } else {
+impl Launcher for MacOsHost {
+    fn launch_app(&mut self, cx: &mut Process, app_id: &str) -> Result<(), String> {
+        cx.run(OPEN, vec!["-b".into(), app_id.to_owned()]).map(drop)
+    }
+
+    fn open_url(&mut self, cx: &mut Process, url: &str) -> Result<(), String> {
+        // The validated URL starts with http:// or https://, so it cannot be
+        // read as an option; -u forces URL handling even if it matches a path.
+        cx.run(OPEN, vec!["-u".into(), url.to_owned()]).map(drop)
+    }
+
+    fn terminal_command(
+        &mut self,
+        cx: &mut Process,
+        app: TerminalApp,
+        command: &str,
+        directory: Option<&str>,
+    ) -> Result<(), String> {
+        self.open_terminal(cx, app, command, directory)
+    }
+}
+
+impl SystemHost for MacOsHost {
+    fn system(&mut self, cx: &mut Process, command: SystemCommand) -> Result<(), String> {
+        match command {
+            SystemCommand::Undo => {
+                self.apple_script(cx, keystroke_script("z", &[Modifier::Command]))?;
+            }
+            SystemCommand::Redo => {
+                self.apple_script(
+                    cx,
+                    keystroke_script("z", &[Modifier::Command, Modifier::Shift]),
+                )?;
+            }
+            SystemCommand::Screenshot => {
+                cx.run(SCREENCAPTURE, vec!["-c".into()])?;
+            }
+        }
         Ok(())
     }
-}
 
-#[cfg(not(target_os = "macos"))]
-impl ProcessRunner for SystemProcessRunner {
-    fn run(&mut self, request: &ProcessRequest) -> Result<ProcessOutput, String> {
-        check_cancellation(self.cancellation(), request.program)?;
-        Err("macOS action execution is unsupported on this platform".into())
-    }
-
-    fn cancellation(&self) -> Option<&AtomicBool> {
-        self.cancellation.as_deref()
-    }
-
-    fn fork(&self, cancellation: Arc<AtomicBool>) -> Option<Box<dyn ProcessRunner>> {
-        Self::fork_runner(cancellation)
+    fn frontmost_app(&mut self, cx: &mut Process) -> Result<String, String> {
+        self.frontmost_bundle_id(cx)
     }
 }
 
-#[cfg(target_os = "macos")]
-impl ProcessRunner for SystemProcessRunner {
-    fn run(&mut self, request: &ProcessRequest) -> Result<ProcessOutput, String> {
-        use std::process::{Command, Stdio};
-        check_cancellation(self.cancellation(), request.program)?;
-        let mut child = Command::new(request.program)
-            .args(&request.args)
-            .envs(request.env.iter().copied())
-            .stdin(if request.stdin.is_some() {
-                Stdio::piped()
-            } else {
-                Stdio::null()
+impl Notifier for MacOsHost {
+    /// Posts a notification (3 s bound), then plays the sound (6 s bound), each
+    /// in its own subprocess that is killed and reaped on timeout or
+    /// cancellation. Both are attempted independently and their errors
+    /// combined; neither is retried. `osascript` exits 0 even when macOS
+    /// refuses the notification (for example "NSNotificationCenter connection
+    /// invalid"), so a successful run that printed to stderr is returned as a
+    /// fixed-category warning. Neither warnings nor errors ever contain stderr
+    /// text, which could echo the label.
+    fn timer_alert(
+        &mut self,
+        cx: &mut Process,
+        alert: &TimerAlert,
+    ) -> Result<Option<String>, String> {
+        let mut args = Vec::new();
+        for line in TIMER_NOTIFICATION_SCRIPT {
+            args.extend(["-e".to_string(), line.to_string()]);
+        }
+        // `--` ends osascript's options; the fixed title comes first, so the
+        // message is never read as an option even if it starts with `-`.
+        args.extend(["--".to_string(), TIMER_TITLE.to_string(), alert.message()]);
+        let notification = cx
+            .run_quiet(ProcessRequest {
+                program: OSASCRIPT,
+                args,
+                env: UTF8_ENV,
+                timeout: TIMER_NOTIFICATION_TIMEOUT,
+                ..ProcessRequest::default()
             })
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|error| format!("{}: could not start process: {error}", request.program))?;
-        let result = write_child_stdin(&mut child, request)
-            .and_then(|()| collect_child_output(&mut child, request, self.cancellation()));
-        if let Err(error) = result {
-            // Stop the direct system-tool process on all monitoring failures. No retry
-            // is safe: a partially completed action could otherwise execute twice.
-            return match stop_child(&mut child) {
-                Ok(()) => Err(error),
-                Err(cleanup_error) => Err(format!(
-                    "{error}; subprocess cleanup failed: {cleanup_error}"
-                )),
-            };
+            .map(|output| notification_warning(&output.stderr))
+            .map_err(|error| format!("timer notification failed: {error}"));
+        let sound = match alert.sound.path() {
+            None => Ok(()),
+            Some(path) => cx
+                .run_quiet(ProcessRequest {
+                    program: AFPLAY,
+                    args: vec![path.to_string()],
+                    timeout: TIMER_SOUND_TIMEOUT,
+                    ..ProcessRequest::default()
+                })
+                .map(drop)
+                .map_err(|error| format!("timer sound failed: {error}")),
+        };
+        match (notification, sound) {
+            (Ok(warning), Ok(())) => Ok(warning),
+            (Err(error), Ok(())) | (Ok(_), Err(error)) => Err(error),
+            (Err(notification), Err(sound)) => Err(format!("{notification}; {sound}")),
         }
-        result
-    }
-
-    fn cancellation(&self) -> Option<&AtomicBool> {
-        self.cancellation.as_deref()
-    }
-
-    fn fork(&self, cancellation: Arc<AtomicBool>) -> Option<Box<dyn ProcessRunner>> {
-        Self::fork_runner(cancellation)
     }
 }
 
-#[cfg(target_os = "macos")]
-fn write_child_stdin(
-    child: &mut std::process::Child,
-    request: &ProcessRequest,
-) -> Result<(), String> {
-    use std::io::Write;
-    let Some(input) = &request.stdin else {
-        return Ok(());
-    };
-    // Callers bound input below the pipe buffer, so this write cannot block.
-    // Dropping the pipe afterwards signals end of input.
-    let mut pipe = child
-        .stdin
-        .take()
-        .ok_or_else(|| format!("{}: missing subprocess stdin pipe", request.program))?;
-    pipe.write_all(input)
-        .map_err(|error| format!("{}: could not write stdin: {error}", request.program))
-}
+impl Host for MacOsHost {
+    const NAME: &'static str = "macOS";
 
-#[cfg(target_os = "macos")]
-fn stop_child(child: &mut std::process::Child) -> Result<(), String> {
-    use std::time::Instant;
-    if child
-        .try_wait()
-        .map_err(|error| error.to_string())?
-        .is_some()
-    {
-        return Ok(());
+    fn for_alerts(&self) -> Self {
+        Self::default()
     }
-    if let Err(error) = child.kill() {
-        // The process may have exited between the status check and kill.
-        if child
-            .try_wait()
-            .map_err(|error| error.to_string())?
-            .is_none()
-        {
-            return Err(format!("could not kill process: {error}"));
-        }
-        return Ok(());
-    }
-    let started = Instant::now();
-    loop {
-        match child.try_wait() {
-            Ok(Some(_)) => return Ok(()),
-            Err(error) => return Err(format!("could not reap killed process: {error}")),
-            Ok(None) => {
-                if started.elapsed() >= Duration::from_secs(1) {
-                    return Err("killed process did not exit within 1000 ms".into());
-                }
-            }
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn collect_child_output(
-    child: &mut std::process::Child,
-    request: &ProcessRequest,
-    cancellation: Option<&AtomicBool>,
-) -> Result<ProcessOutput, String> {
-    use std::time::Instant;
-    let mut stdout_pipe = child
-        .stdout
-        .take()
-        .ok_or("missing subprocess stdout pipe")?;
-    let mut stderr_pipe = child
-        .stderr
-        .take()
-        .ok_or("missing subprocess stderr pipe")?;
-    make_nonblocking(&stdout_pipe)?;
-    make_nonblocking(&stderr_pipe)?;
-    let start = Instant::now();
-    collect_output(
-        &mut stdout_pipe,
-        &mut stderr_pipe,
-        request,
-        || {
-            child
-                .try_wait()
-                .map(|status| status.map(|status| (status.success(), status.to_string())))
-                .map_err(|error| error.to_string())
-        },
-        || start.elapsed(),
-        || std::thread::sleep(Duration::from_millis(10)),
-        || cancellation.is_some_and(|flag| flag.load(Ordering::Acquire)),
-    )
-}
-
-#[cfg(any(target_os = "macos", test))]
-fn collect_output(
-    stdout_pipe: &mut impl std::io::Read,
-    stderr_pipe: &mut impl std::io::Read,
-    request: &ProcessRequest,
-    mut poll_status: impl FnMut() -> Result<Option<(bool, String)>, String>,
-    mut elapsed: impl FnMut() -> Duration,
-    mut pause: impl FnMut(),
-    mut cancelled: impl FnMut() -> bool,
-) -> Result<ProcessOutput, String> {
-    let mut stdout = Vec::new();
-    let mut stderr = Vec::new();
-    let mut stdout_closed = false;
-    let mut stderr_closed = false;
-    loop {
-        if cancelled() {
-            return Err(format!(
-                "{}: action execution cancelled; action may already have taken effect",
-                request.program
-            ));
-        }
-        if !stdout_closed {
-            stdout_closed = drain_pipe(stdout_pipe, &mut stdout, request.output_limit)
-                .map_err(|error| format!("{}: stdout: {error}", request.program))?;
-        }
-        if !stderr_closed {
-            stderr_closed = drain_pipe(stderr_pipe, &mut stderr, request.output_limit)
-                .map_err(|error| format!("{}: stderr: {error}", request.program))?;
-        }
-        if cancelled() {
-            return Err(format!(
-                "{}: action execution cancelled; action may already have taken effect",
-                request.program
-            ));
-        }
-        if let Some((success, status)) = poll_status()
-            .map_err(|error| format!("{}: could not inspect process: {error}", request.program))?
-            && stdout_closed
-            && stderr_closed
-        {
-            return Ok(ProcessOutput {
-                success,
-                status,
-                stdout,
-                stderr,
-            });
-        }
-        if elapsed() >= request.timeout {
-            return Err(format!(
-                "{}: subprocess timed out after {} ms; action may already have taken effect",
-                request.program,
-                request.timeout.as_millis()
-            ));
-        }
-        pause();
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn make_nonblocking(pipe: &impl std::os::fd::AsRawFd) -> Result<(), String> {
-    let fd = pipe.as_raw_fd();
-    // SAFETY: fd belongs to a live child pipe. These fcntl operations read and
-    // modify only its status flags and do not take ownership of the descriptor.
-    let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
-    if flags == -1 || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } == -1 {
-        return Err(format!(
-            "could not make subprocess pipe nonblocking: {}",
-            std::io::Error::last_os_error()
-        ));
-    }
-    Ok(())
-}
-
-#[cfg(any(target_os = "macos", test))]
-fn drain_pipe(
-    pipe: &mut impl std::io::Read,
-    collected: &mut Vec<u8>,
-    limit: usize,
-) -> Result<bool, String> {
-    use std::io::ErrorKind;
-    let mut buffer = [0; 1024];
-    // A read budget also bounds repeated Interrupted responses so the caller
-    // regains control to check its deadline even under continuous signals.
-    for _ in 0..32 {
-        match pipe.read(&mut buffer) {
-            Ok(0) => return Ok(true),
-            Ok(count) => {
-                if count > limit.saturating_sub(collected.len()) {
-                    return Err(format!("subprocess output exceeded {limit} bytes"));
-                }
-                collected.extend_from_slice(&buffer[..count]);
-            }
-            Err(error) if error.kind() == ErrorKind::WouldBlock => return Ok(false),
-            Err(error) if error.kind() == ErrorKind::Interrupted => continue,
-            Err(error) => return Err(error.to_string()),
-        }
-    }
-    Ok(false)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ProfileDirection;
+    use crate::{
+        Action, ActionDispatcher, ProfileDirection, ServiceState, VariableValue,
+        host::{
+            MULTI_ACTION_DEADLINE, RUN_PROGRAM, RUN_PROGRAM_TIMEOUT, STEP_SPACING, expand_home,
+            process::{
+                OUTPUT_LIMIT, PROCESS_TIMEOUT, ProcessRunner, Sleeper, collect_output, drain_pipe,
+            },
+        },
+        obs::{OBS_UNAVAILABLE, ObsClient},
+        plugin::{PLUGIN_UNAVAILABLE, PluginBridge},
+        streamlabs::{STREAMLABS_UNAVAILABLE, StreamlabsClient},
+    };
+    // Only the forced-exit test, which is macOS-only, reads the group list.
+    #[cfg(target_os = "macos")]
+    use crate::host::process::program_groups;
+    use std::sync::atomic::Ordering;
     use std::{collections::VecDeque, sync::Mutex};
 
     #[derive(Default)]
@@ -1779,10 +1051,17 @@ mod tests {
                 env: request.env,
                 timeout: request.timeout,
                 output_limit: request.output_limit,
+                path: request.path.clone(),
+                current_dir: request.current_dir.clone(),
+                isolated: request.isolated,
             });
             let cost = state.request_cost;
             state.elapsed += cost;
             state.results.pop_front().expect("unexpected subprocess")
+        }
+
+        fn checks_paths(&self) -> bool {
+            false
         }
     }
 
@@ -1802,15 +1081,10 @@ mod tests {
             results: results.into(),
             ..FakeState::default()
         }));
-        let dispatcher = MacOsDispatcher {
-            runner: Box::new(FakeRunner(state.clone())),
-            sleeper: Box::new(FakeSleeper(state.clone(), std::time::Instant::now())),
-            obs: None,
-            streamlabs: None,
-            media_access_requested: false,
-            service_state: ServiceState::default(),
-            variables: Default::default(),
-        };
+        let dispatcher = MacOsDispatcher::from_parts(
+            Box::new(FakeRunner(state.clone())),
+            Box::new(FakeSleeper(state.clone(), std::time::Instant::now())),
+        );
         (dispatcher, state)
     }
 
@@ -2016,6 +1290,422 @@ mod tests {
             "{error}"
         );
         assert!(!error.contains("secret-token"), "{error}");
+    }
+
+    #[test]
+    fn run_program_passes_path_and_arguments_as_they_are() {
+        let home = std::env::var("HOME").unwrap();
+        let (mut dispatcher, state) = fake(vec![success("")]);
+        let args = vec![
+            "--scene".to_string(),
+            "on air".into(),
+            "".into(),
+            "$(id) ~".into(),
+        ];
+        dispatcher
+            .dispatch(&Action::RunProgram {
+                program: "~/bin/lights".into(),
+                args: args.clone(),
+                directory: Some("/tmp".into()),
+                variables: false,
+            })
+            .unwrap();
+        let state = state.lock().unwrap();
+        let request = &state.requests[0];
+        assert_eq!(request.program, RUN_PROGRAM);
+        assert_eq!(
+            request.path.as_deref(),
+            Some(&*format!("{home}/bin/lights"))
+        );
+        assert_eq!(request.args, args);
+        assert_eq!(request.current_dir.as_deref(), Some("/tmp"));
+        assert!(request.isolated);
+        assert!(request.stdin.is_none());
+        assert_eq!(request.timeout, RUN_PROGRAM_TIMEOUT);
+        drop(state);
+        // Without a directory it starts in the home folder.
+        let (mut dispatcher, state) = fake(vec![success("")]);
+        dispatcher
+            .dispatch(&Action::RunProgram {
+                program: "/usr/bin/true".into(),
+                args: vec![],
+                directory: None,
+                variables: false,
+            })
+            .unwrap();
+        let state = state.lock().unwrap();
+        assert_eq!(state.requests[0].path.as_deref(), Some("/usr/bin/true"));
+        assert_eq!(state.requests[0].current_dir.as_deref(), Some(&*home));
+    }
+
+    #[test]
+    fn run_program_fills_in_the_current_variable_values_or_starts_nothing() {
+        use crate::profile::Variable;
+        let (mut dispatcher, state) = fake(vec![success(""), success(""), success("")]);
+        dispatcher.set_service_state(ServiceState {
+            variables: vec![Variable {
+                name: "scene".into(),
+                value: VariableValue::Text("intro".into()),
+            }],
+            ..Default::default()
+        });
+        let program = Action::RunProgram {
+            program: "/usr/bin/true".into(),
+            args: vec!["--scene={{scene}}".into(), "{{scene}}".into()],
+            directory: None,
+            variables: true,
+        };
+        dispatcher.dispatch(&program).unwrap();
+        let set = |value: &str| Action::SetVariable {
+            name: "scene".into(),
+            value: VariableValue::Text(value.into()),
+        };
+        dispatcher.dispatch(&set("on air")).unwrap();
+        dispatcher.dispatch(&program).unwrap();
+        assert_eq!(
+            state
+                .lock()
+                .unwrap()
+                .requests
+                .iter()
+                .map(|request| request.args.clone())
+                .collect::<Vec<_>>(),
+            [["--scene=intro", "intro"], ["--scene=on air", "on air"]]
+        );
+        // A value that would start an argument with - stops the press before
+        // anything starts, and the error does not show the value.
+        dispatcher.dispatch(&set("--rm-all")).unwrap();
+        let error = dispatcher.dispatch(&program).unwrap_err();
+        assert!(
+            error.starts_with("run_program: argument 2 would start with -"),
+            "{error}"
+        );
+        assert!(error.ends_with("the program was not started"), "{error}");
+        assert!(!error.contains("rm-all"), "{error}");
+        assert_eq!(state.lock().unwrap().requests.len(), 2);
+        // With variables off the same text is passed as it is.
+        dispatcher
+            .dispatch(&Action::RunProgram {
+                program: "/usr/bin/true".into(),
+                args: vec!["{{scene}}".into()],
+                directory: None,
+                variables: false,
+            })
+            .unwrap();
+        assert_eq!(state.lock().unwrap().requests[2].args, ["{{scene}}"]);
+    }
+
+    #[test]
+    fn run_program_with_variables_from_a_swapped_out_profile_starts_nothing() {
+        use crate::profile::Variable;
+        let (mut dispatcher, state) = fake(vec![success(""), success(""), success("")]);
+        let declared = vec![Variable {
+            name: "target".into(),
+            value: VariableValue::Text("a".into()),
+        }];
+        let pressed_by = |profile: u64| ServiceState {
+            variables: declared.clone(),
+            profile,
+            ..Default::default()
+        };
+        let program = Action::RunProgram {
+            program: "/usr/bin/true".into(),
+            args: vec!["{{target}}".into()],
+            directory: None,
+            variables: true,
+        };
+        // Before any swap, every press fills in.
+        dispatcher.set_service_state(pressed_by(7));
+        dispatcher.dispatch(&program).unwrap();
+        // Profile 8 is swapped in while a press of profile 7 is still queued.
+        dispatcher.variables.swap(&declared, 8);
+        dispatcher.set_service_state(pressed_by(7));
+        let error = dispatcher.dispatch(&program).unwrap_err();
+        assert_eq!(
+            error,
+            "run_program: the profile changed after this key was pressed; the program was not started"
+        );
+        // Without variables nothing is filled in, so it still runs.
+        dispatcher
+            .dispatch(&Action::RunProgram {
+                program: "/usr/bin/true".into(),
+                args: vec![],
+                directory: None,
+                variables: false,
+            })
+            .unwrap();
+        // Presses of the profile now running fill in again.
+        dispatcher.set_service_state(pressed_by(8));
+        assert_eq!(state.lock().unwrap().requests.len(), 2);
+        dispatcher.dispatch(&program).unwrap();
+        assert_eq!(state.lock().unwrap().requests[2].args, ["a"]);
+    }
+
+    #[test]
+    fn a_plugin_action_with_variables_from_a_swapped_out_profile_asks_nothing() {
+        use crate::{PluginValue, profile::Variable};
+        let (sent_tx, sent_rx) = std::sync::mpsc::channel::<serde_json::Value>();
+        let sent_tx = Mutex::new(sent_tx);
+        let bridge = PluginBridge::new(Box::new(move |record| {
+            sent_tx.lock().unwrap().send(record.clone()).unwrap();
+            Ok(())
+        }));
+        let (mut dispatcher, _) = fake(vec![]);
+        dispatcher.plugins = Some(bridge.clone());
+        let declared = vec![Variable {
+            name: "room".into(),
+            value: VariableValue::Text("desk".into()),
+        }];
+        let pressed_by = |profile: u64| ServiceState {
+            variables: declared.clone(),
+            profile,
+            ..Default::default()
+        };
+        let toggle = Action::Plugin {
+            plugin: "com.x.y".into(),
+            min_version: "1.0.0".into(),
+            action: "toggle".into(),
+            params: [(
+                "entity".to_string(),
+                PluginValue::Text("light.{{room}}".into()),
+            )]
+            .into(),
+            variables: vec!["entity".into()],
+        };
+        dispatcher.variables.swap(&declared, 7);
+        // Profile 8 is swapped in while a press of profile 7 is still queued.
+        dispatcher.variables.swap(&declared, 8);
+        dispatcher.set_service_state(pressed_by(7));
+        let error = dispatcher.dispatch(&toggle).unwrap_err();
+        assert_eq!(
+            error,
+            "com.x.y: the profile changed after this key was pressed; the plugin was not asked"
+        );
+        assert!(sent_rx.try_recv().is_err(), "the app was asked");
+        // A press of the profile now running fills in and names its variable parameters to the app.
+        dispatcher.set_service_state(pressed_by(8));
+        let app = std::thread::spawn(move || {
+            let record = sent_rx.recv().unwrap();
+            bridge
+                .complete(record["request"].as_u64().unwrap(), Ok(None))
+                .unwrap();
+            record
+        });
+        dispatcher.dispatch(&toggle).unwrap();
+        let record = app.join().unwrap();
+        assert_eq!(
+            record["params"],
+            serde_json::json!({"entity": "light.desk"})
+        );
+        assert_eq!(record["variables"], serde_json::json!(["entity"]));
+    }
+
+    #[test]
+    fn run_program_failure_names_neither_path_nor_arguments() {
+        let (mut dispatcher, _) = fake(vec![Ok(ProcessOutput {
+            success: false,
+            status: "exit status: 3".into(),
+            stdout: Vec::new(),
+            stderr: Vec::new(),
+        })]);
+        let error = dispatcher
+            .dispatch(&Action::RunProgram {
+                program: "/Users/secret-name/bin/tool".into(),
+                args: vec!["secret-token".into()],
+                directory: None,
+                variables: false,
+            })
+            .unwrap_err();
+        assert_eq!(error, "run_program: exit status: 3");
+    }
+
+    #[test]
+    fn run_program_explains_a_missing_program_or_interpreter() {
+        for (status, hint) in [
+            ("exit status: 127", "was not found"),
+            ("exit status: 126", "could not be run"),
+        ] {
+            let (mut dispatcher, _) = fake(vec![Ok(ProcessOutput {
+                success: false,
+                status: status.into(),
+                stdout: Vec::new(),
+                stderr: Vec::new(),
+            })]);
+            let error = dispatcher
+                .dispatch(&Action::RunProgram {
+                    program: "/Users/someone/bin/tool".into(),
+                    args: vec![],
+                    directory: None,
+                    variables: false,
+                })
+                .unwrap_err();
+            assert!(
+                error.starts_with(&format!("run_program: {status} (")),
+                "{error}"
+            );
+            assert!(error.contains(hint), "{error}");
+            assert!(!error.contains("someone"), "{error}");
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn run_program_reports_a_missing_start_folder_before_starting_anything() {
+        let mut dispatcher = MacOsDispatcher::with_cancellation(Arc::new(AtomicBool::new(false)));
+        let error = dispatcher
+            .dispatch(&Action::RunProgram {
+                program: "/usr/bin/true".into(),
+                args: vec![],
+                directory: Some("/no/such/folder-for-osh".into()),
+                variables: false,
+            })
+            .unwrap_err();
+        assert_eq!(
+            error,
+            "the program was not started: its start folder does not exist"
+        );
+    }
+
+    /// Serializes the tests that start real isolated programs: the forced-exit
+    /// test kills every registered group.
+    #[cfg(target_os = "macos")]
+    static REAL_PROGRAMS: Mutex<()> = Mutex::new(());
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn running_program_groups_are_killed_on_a_forced_exit() {
+        let _serial = REAL_PROGRAMS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let before = program_groups().clone();
+        let worker = std::thread::spawn(|| {
+            let mut runner = SystemProcessRunner { cancellation: None };
+            let started = std::time::Instant::now();
+            let result = runner.run(&ProcessRequest {
+                program: RUN_PROGRAM,
+                path: Some("/bin/sleep".into()),
+                args: vec!["30".into()],
+                isolated: true,
+                timeout: Duration::from_secs(20),
+                output_limit: OUTPUT_LIMIT,
+                ..ProcessRequest::default()
+            });
+            (result.map(|output| output.success), started.elapsed())
+        });
+        // Wait until the program is registered, then take the forced-exit path.
+        let registered = std::time::Instant::now();
+        let group = loop {
+            if let Some(&group) = program_groups().difference(&before).next() {
+                break group;
+            }
+            assert!(registered.elapsed() < Duration::from_secs(5));
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        kill_running_programs();
+        let (result, elapsed) = worker.join().unwrap();
+        // Killed by the signal: the exit is a failure, long before the deadline.
+        assert_eq!(result, Ok(false));
+        assert!(elapsed < Duration::from_secs(5), "{elapsed:?}");
+        assert!(!program_groups().contains(&group));
+    }
+
+    #[test]
+    fn run_program_as_a_step_gets_what_is_left_of_the_deadline() {
+        let (mut dispatcher, state) = fake(vec![success(""), success("")]);
+        state.lock().unwrap().request_cost = Duration::from_secs(10);
+        let program = Action::RunProgram {
+            program: "/usr/bin/true".into(),
+            args: vec![],
+            directory: None,
+            variables: false,
+        };
+        dispatcher
+            .dispatch(&Action::MultiAction {
+                actions: vec![program.clone(), program],
+            })
+            .unwrap();
+        let state = state.lock().unwrap();
+        assert_eq!(state.requests[0].timeout, RUN_PROGRAM_TIMEOUT);
+        let second = state.requests[1].timeout;
+        assert!(
+            second < Duration::from_secs(5) && !second.is_zero(),
+            "{second:?}"
+        );
+    }
+
+    #[test]
+    fn expand_home_touches_only_a_leading_tilde() {
+        assert_eq!(expand_home("~", "/Users/me"), "/Users/me");
+        assert_eq!(expand_home("~/bin/x", "/Users/me/"), "/Users/me/bin/x");
+        assert_eq!(expand_home("/opt/~/x", "/Users/me"), "/opt/~/x");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn isolated_process_runs_in_its_directory_and_its_group_dies_at_the_deadline() {
+        let _serial = REAL_PROGRAMS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut runner = SystemProcessRunner { cancellation: None };
+        let request = |args: Vec<String>, timeout| ProcessRequest {
+            program: RUN_PROGRAM,
+            path: Some("/bin/sh".into()),
+            args,
+            current_dir: Some("/tmp".into()),
+            isolated: true,
+            timeout,
+            output_limit: OUTPUT_LIMIT,
+            ..ProcessRequest::default()
+        };
+        let marker = std::env::temp_dir().join(format!("osh-run-program-{}", std::process::id()));
+        let _ = std::fs::remove_file(&marker);
+        // It starts in its directory and its exit status is reported.
+        let output = runner
+            .run(&request(
+                vec![
+                    "-c".into(),
+                    "[ \"$(pwd -P)\" = /private/tmp ] && exit 3".into(),
+                ],
+                Duration::from_secs(5),
+            ))
+            .unwrap();
+        assert!(!output.success);
+        assert!(output.status.contains('3'), "{}", output.status);
+        // A child that outlives the deadline is killed with the program.
+        let started = std::time::Instant::now();
+        let error = runner
+            .run(&request(
+                vec![
+                    "-c".into(),
+                    format!("(sleep 1; touch '{}') & sleep 30", marker.display()),
+                ],
+                Duration::from_millis(300),
+            ))
+            .err()
+            .unwrap();
+        assert!(
+            error.starts_with("run_program: subprocess timed out"),
+            "{error}"
+        );
+        assert!(started.elapsed() < Duration::from_secs(3));
+        std::thread::sleep(Duration::from_millis(1500));
+        assert!(
+            !marker.exists(),
+            "the background child survived the deadline"
+        );
+        // A missing program fails to start without naming the path.
+        let error = runner
+            .run(&ProcessRequest {
+                path: Some("/no/such/program".into()),
+                ..request(vec![], Duration::from_secs(1))
+            })
+            .err()
+            .unwrap();
+        assert!(
+            error.starts_with("run_program: could not start process"),
+            "{error}"
+        );
+        assert!(!error.contains("/no/such"), "{error}");
     }
 
     #[test]
@@ -2464,7 +2154,10 @@ mod tests {
     fn cancellation_prevents_process_start_without_real_actions() {
         let cancellation = Arc::new(AtomicBool::new(true));
         let mut dispatcher = MacOsDispatcher::with_cancellation(cancellation.clone());
-        let error = dispatcher.run("/not/an/executable", vec![]).unwrap_err();
+        let error = dispatcher
+            .process
+            .run("/not/an/executable", vec![])
+            .unwrap_err();
         assert!(error.contains("action execution cancelled"));
         let mut runner = SystemProcessRunner {
             cancellation: Some(cancellation),
@@ -2552,15 +2245,10 @@ mod tests {
                 Some(&self.0)
             }
         }
-        let mut dispatcher = MacOsDispatcher {
-            runner: Box::new(CancelledRunner(AtomicBool::new(true))),
-            sleeper: Box::new(SystemSleeper),
-            obs: None,
-            streamlabs: None,
-            media_access_requested: false,
-            service_state: ServiceState::default(),
-            variables: Default::default(),
-        };
+        let mut dispatcher = MacOsDispatcher::from_parts(
+            Box::new(CancelledRunner(AtomicBool::new(true))),
+            Box::new(SystemSleeper),
+        );
         let error = dispatcher
             .restore_audio_snapshot(&AudioSnapshot {
                 output_volume: 50,
@@ -4008,7 +3696,7 @@ mod tests {
             crate::obs::ObsEndpoint::new("127.0.0.1", closed.local_addr().unwrap().port()).unwrap(),
             None,
         )));
-        let now = dispatcher.sleeper.now();
+        let now = dispatcher.process.now();
         let error = dispatcher
             .obs_action(
                 &Action::ObsScene {
@@ -4274,15 +3962,10 @@ mod tests {
             MediaCommand::PreviousTrack,
             MediaCommand::Stop,
         ] {
-            let mut dispatcher = MacOsDispatcher {
-                runner: Box::new(CancelledRunner(AtomicBool::new(true), 0)),
-                sleeper: Box::new(SystemSleeper),
-                obs: None,
-                streamlabs: None,
-                media_access_requested: false,
-                service_state: ServiceState::default(),
-                variables: Default::default(),
-            };
+            let mut dispatcher = MacOsDispatcher::from_parts(
+                Box::new(CancelledRunner(AtomicBool::new(true), 0)),
+                Box::new(SystemSleeper),
+            );
             let error = dispatcher.dispatch(&Action::Media { command }).unwrap_err();
             assert!(error.contains("action execution cancelled"), "{error}");
             assert!(dispatcher.unavailable(&Action::Media { command }).is_none());
@@ -4646,7 +4329,8 @@ mod tests {
     fn oversize_stdin_is_rejected_before_any_process() {
         let (mut dispatcher, state) = fake(vec![]);
         let error = dispatcher
-            .set_clipboard(vec![b'x'; STDIN_LIMIT + 1])
+            .host
+            .set_clipboard(&mut dispatcher.process, vec![b'x'; STDIN_LIMIT + 1])
             .unwrap_err();
         assert!(error.contains("stdin exceeds"));
         assert!(state.lock().unwrap().requests.is_empty());
@@ -4843,18 +4527,13 @@ mod tests {
         }
         let cancellation = Arc::new(AtomicBool::new(false));
         let requests = Arc::new(Mutex::new(Vec::new()));
-        let mut dispatcher = MacOsDispatcher {
-            runner: Box::new(FlagRunner {
+        let mut dispatcher = MacOsDispatcher::from_parts(
+            Box::new(FlagRunner {
                 cancellation: cancellation.clone(),
                 requests: requests.clone(),
             }),
-            sleeper: Box::new(CancellingSleeper(cancellation)),
-            obs: None,
-            streamlabs: None,
-            media_access_requested: false,
-            service_state: ServiceState::default(),
-            variables: Default::default(),
-        };
+            Box::new(CancellingSleeper(cancellation)),
+        );
         let error = dispatcher
             .dispatch(&Action::MultiAction {
                 actions: vec![
@@ -4888,5 +4567,248 @@ mod tests {
             .dispatch(&Action::ToggleMute)
             .unwrap_err();
         assert!(error.contains("unsupported on this platform"));
+    }
+
+    /// A bridge whose app answers each record in turn with the next of `answers`, and the records it was sent.
+    fn answering_bridge(
+        answers: Vec<Result<Option<bool>, String>>,
+    ) -> (PluginBridge, Arc<Mutex<Vec<serde_json::Value>>>) {
+        let sent = Arc::new(Mutex::new(Vec::new()));
+        let answers = Arc::new(Mutex::new(VecDeque::from(answers)));
+        let bridge_slot: Arc<Mutex<Option<PluginBridge>>> = Arc::default();
+        let (log, slot) = (Arc::clone(&sent), Arc::clone(&bridge_slot));
+        let bridge = PluginBridge::new(Box::new(move |record| {
+            log.lock().unwrap().push(record.clone());
+            let request = record["request"].as_u64().unwrap();
+            if let Some(answer) = answers.lock().unwrap().pop_front() {
+                let bridge = slot.lock().unwrap().clone().unwrap();
+                // Answered from another thread, as the control channel does. The waiter is registered before the
+                // record is sent, so one completion is enough; a press that stopped waiting ignores it.
+                std::thread::spawn(move || {
+                    let _ = bridge.complete(request, answer);
+                });
+            }
+            Ok(())
+        }));
+        *bridge_slot.lock().unwrap() = Some(bridge.clone());
+        (bridge, sent)
+    }
+
+    fn plugin_condition(condition: &str, value: bool) -> crate::profile::Condition {
+        serde_json::from_value(serde_json::json!({"plugin": {"plugin": "com.example.lights",
+            "min_version": "1.2.0", "condition": condition, "params": {"entity": "light.{{room}}", "level": 2},
+            "variables": ["entity"], "value": value}}))
+        .unwrap()
+    }
+
+    fn with_room(dispatcher: &mut MacOsDispatcher) {
+        dispatcher.set_service_state(ServiceState {
+            variables: vec![crate::profile::Variable {
+                name: "room".into(),
+                value: VariableValue::Text("desk".into()),
+            }],
+            input: Some(crate::PluginInput {
+                module: crate::ServiceModule::M4315,
+                control: 3,
+                gesture: crate::Gesture::Pressed,
+                value: None,
+            }),
+            ..Default::default()
+        });
+    }
+
+    #[test]
+    fn a_plugin_condition_runs_the_branch_its_answer_picks() {
+        for (answer, value, expected_key) in [
+            (true, true, "a"),
+            (false, true, "b"),
+            (false, false, "a"),
+            (true, false, "b"),
+        ] {
+            let (bridge, sent) = answering_bridge(vec![Ok(Some(answer))]);
+            let (dispatcher, state) = fake(vec![success("")]);
+            let mut dispatcher = dispatcher.with_plugins(Some(bridge));
+            with_room(&mut dispatcher);
+            let action = conditional(plugin_condition("is_on", value));
+            assert_eq!(dispatcher.unavailable(&action), None);
+            dispatcher.dispatch(&action).unwrap();
+            let state = state.lock().unwrap();
+            assert_eq!(state.requests.len(), 1, "exactly one branch step ran");
+            assert!(
+                state.requests[0].args[1].contains(&format!("keystroke \"{expected_key}\"")),
+                "answer {answer}, value {value}"
+            );
+            let sent = sent.lock().unwrap();
+            assert_eq!(sent.len(), 1);
+            assert_eq!(
+                sent[0],
+                serde_json::json!({"type": "plugin_check", "request": 1, "plugin": "com.example.lights",
+                    "min_version": "1.2.0", "condition": "is_on", "params": {"entity": "light.desk", "level": 2},
+                    "variables": ["entity"], "timeout_ms": 3000,
+                    "input": {"gesture": "pressed", "control": {"module": "m4315", "index": 3}}})
+            );
+        }
+    }
+
+    #[test]
+    fn a_plugin_condition_that_cannot_be_read_runs_neither_branch() {
+        for (answer, reason) in [
+            (
+                Err("the light is offline".to_string()),
+                "the light is offline",
+            ),
+            (
+                Ok(None),
+                "the plugin answered a check without true or false",
+            ),
+        ] {
+            let (bridge, _) = answering_bridge(vec![answer]);
+            let (dispatcher, state) = fake(vec![]);
+            let mut dispatcher = dispatcher.with_plugins(Some(bridge));
+            with_room(&mut dispatcher);
+            let error = dispatcher
+                .dispatch(&conditional(plugin_condition("is_on", true)))
+                .unwrap_err();
+            assert_eq!(
+                error,
+                format!(
+                    "conditional could not read com.example.lights is_on: {reason}; neither branch ran"
+                )
+            );
+            assert!(state.lock().unwrap().requests.is_empty());
+        }
+        // Without a bridge it is unavailable, and asks nothing when dispatched anyway.
+        let (mut dispatcher, state) = fake(vec![]);
+        with_room(&mut dispatcher);
+        let action = conditional(plugin_condition("is_on", true));
+        assert_eq!(dispatcher.unavailable(&action), Some(PLUGIN_UNAVAILABLE));
+        let error = dispatcher.dispatch(&action).unwrap_err();
+        assert_eq!(
+            error,
+            format!(
+                "conditional could not read com.example.lights is_on: {PLUGIN_UNAVAILABLE}; neither branch ran"
+            )
+        );
+        assert!(state.lock().unwrap().requests.is_empty());
+        // A variable that cannot be filled in asks nothing.
+        let (bridge, sent) = answering_bridge(vec![]);
+        let (dispatcher, _) = fake(vec![]);
+        let mut dispatcher = dispatcher.with_plugins(Some(bridge));
+        let error = dispatcher.dispatch(&action).unwrap_err();
+        assert!(error.contains("variable room is not declared"), "{error}");
+        assert!(error.ends_with("neither branch ran"), "{error}");
+        assert!(sent.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_plugin_condition_gets_what_is_left_of_the_deadline_and_at_most_3_s() {
+        let (bridge, sent) = answering_bridge(vec![Ok(Some(true)), Ok(Some(true))]);
+        let (dispatcher, _) = fake(vec![]);
+        let mut dispatcher = dispatcher.with_plugins(Some(bridge));
+        with_room(&mut dispatcher);
+        let condition = plugin_condition("is_on", true);
+        let now = dispatcher.process.now();
+        assert!(
+            dispatcher
+                .evaluate_condition(&condition, now + Duration::from_secs(15))
+                .unwrap()
+        );
+        assert!(
+            dispatcher
+                .evaluate_condition(&condition, now + Duration::from_millis(1200))
+                .unwrap()
+        );
+        let error = dispatcher.evaluate_condition(&condition, now).unwrap_err();
+        assert_eq!(
+            error,
+            "conditional could not read com.example.lights is_on: the sequence's 15 s overall deadline has passed; the plugin was not asked; neither branch ran"
+        );
+        let timeouts: Vec<_> = sent
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|record| record["timeout_ms"].clone())
+            .collect();
+        assert_eq!(timeouts, [3000, 1200]);
+    }
+
+    #[test]
+    fn a_group_asks_every_plugin_condition_in_order_without_stopping_early() {
+        use crate::profile::Condition;
+        // The first member already decides the `any`, and the second is still asked; its failure fails the press.
+        let (bridge, sent) = answering_bridge(vec![
+            Ok(Some(true)),
+            Err("the meeting app is closed".into()),
+        ]);
+        let (dispatcher, state) = fake(vec![]);
+        let mut dispatcher = dispatcher.with_plugins(Some(bridge));
+        with_room(&mut dispatcher);
+        let error = dispatcher
+            .dispatch(&conditional(Condition::Any(vec![
+                plugin_condition("is_on", true),
+                plugin_condition("in_meeting", true),
+            ])))
+            .unwrap_err();
+        assert_eq!(
+            error,
+            "conditional could not read com.example.lights in_meeting: the meeting app is closed; neither branch ran"
+        );
+        let asked: Vec<_> = sent
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|record| record["condition"].clone())
+            .collect();
+        assert_eq!(asked, ["is_on", "in_meeting"]);
+        assert!(state.lock().unwrap().requests.is_empty());
+        // Both answered: `all` of true and false is false, so `else` runs.
+        let (bridge, sent) = answering_bridge(vec![Ok(Some(true)), Ok(Some(false))]);
+        let (dispatcher, state) = fake(vec![success("")]);
+        let mut dispatcher = dispatcher.with_plugins(Some(bridge));
+        with_room(&mut dispatcher);
+        dispatcher
+            .dispatch(&conditional(Condition::All(vec![
+                plugin_condition("is_on", true),
+                plugin_condition("in_meeting", true),
+            ])))
+            .unwrap();
+        assert_eq!(sent.lock().unwrap().len(), 2);
+        assert!(state.lock().unwrap().requests[0].args[1].contains("keystroke \"b\""));
+    }
+
+    #[test]
+    fn a_plugin_condition_from_a_swapped_out_profile_asks_nothing() {
+        let (bridge, sent) = answering_bridge(vec![]);
+        let (dispatcher, _) = fake(vec![]);
+        let mut dispatcher = dispatcher.with_plugins(Some(bridge));
+        let declared = vec![crate::profile::Variable {
+            name: "room".into(),
+            value: VariableValue::Text("desk".into()),
+        }];
+        dispatcher.variables.swap(&declared, 7);
+        dispatcher.variables.swap(&declared, 8);
+        dispatcher.set_service_state(ServiceState {
+            variables: declared,
+            profile: 7,
+            ..Default::default()
+        });
+        let error = dispatcher
+            .dispatch(&conditional(plugin_condition("is_on", true)))
+            .unwrap_err();
+        assert_eq!(
+            error,
+            "conditional could not read com.example.lights is_on: the profile changed after this key was pressed; the plugin was not asked; neither branch ran"
+        );
+        assert!(sent.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_dry_run_records_a_plugin_conditional_without_asking() {
+        use crate::{ActionDispatcher, DryRunDispatcher};
+        let mut dispatcher = DryRunDispatcher::default();
+        let action = conditional(plugin_condition("is_on", true));
+        assert_eq!(dispatcher.unavailable(&action), None);
+        dispatcher.dispatch(&action).unwrap();
+        assert_eq!(dispatcher.actions, [action]);
     }
 }

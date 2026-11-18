@@ -1,8 +1,8 @@
 import { groupItems, groupMode, isGroup } from './flow-model';
 import { english } from './i18n-react';
-import type { Action, BindingAction, Condition, LeafCondition, Variable, VariableValue, FaderTemplate, MacroStep, MediaCommand, MediaKey, ObsNameList, ObsMediaOp, ObsMuteOp, ObsOutputOp, ObsRecordOp, ObsReplayBufferOp, ObsSwitchOp, ProfileDirection, StepAction, StreamlabsAudioOp, StreamlabsVisibilityOp, SystemCommand, TerminalApp, TimerSound } from './contracts';
+import type { Action, BindingAction, Condition, LeafCondition, PluginCondition, PluginValue, Variable, VariableValue, FaderTemplate, MacroStep, MediaCommand, MediaKey, ObsNameList, ObsMediaOp, ObsMuteOp, ObsOutputOp, ObsRecordOp, ObsReplayBufferOp, ObsSwitchOp, ProfileDirection, StepAction, StreamlabsAudioOp, StreamlabsVisibilityOp, SystemCommand, TerminalApp, TimerSound } from './contracts';
 
-// Mirrors NAMED_KEYS in crates/cooltek-sdk-service/src/profile.rs. The Rust
+// Mirrors KEY_NAMES in crates/cooltek-sdk-service/src/profile.rs. The Rust
 // service holds the authoritative allow-list and rejects anything else; the
 // shared fixture test keeps both tables identical, in order.
 export const namedKeys: ReadonlyArray<readonly [string, string]> = [
@@ -146,7 +146,7 @@ export const isFaderTemplate = (action: { type: string } | null | undefined): ac
 
 export const stepActionTypes: ReadonlyArray<readonly [StepActionType, string]> = [
   ['volume', 'Change output volume'], ['set_volume', 'Set output volume'], ['toggle_mute', 'Toggle output mute'],
-  ['shortcut', 'Keyboard shortcut'], ['launch_app', 'Open application'], ['open_url', 'Open URL'],
+  ['shortcut', 'Keyboard shortcut'], ['launch_app', 'Open application'], ['open_url', 'Open URL'], ['run_program', 'Run program'], ['plugin', 'Plugin action'],
   ['text', 'Paste text'], ['media', 'Media control'], ['system', 'System action'], ['obs_scene', 'Switch OBS scene'],
   ['obs_virtual_camera', 'OBS virtual camera'], ['obs_replay_buffer', 'OBS replay buffer'],
   ['obs_stream', 'OBS stream'], ['obs_record', 'OBS recording'],
@@ -168,6 +168,9 @@ export function defaultStepAction(type: StepActionType): StepAction {
     case 'shortcut': return { type, key: 'c', modifiers: ['command'] };
     case 'launch_app': return { type, bundle_id: 'com.apple.finder' };
     case 'open_url': return { type, url: 'https://example.com' };
+    case 'run_program': return { type, program: '/usr/bin/say', args: ['Hello'] };
+    // No plugin yet: the editor picks the first installed one (PluginFields), and the service refuses an empty id.
+    case 'plugin': return { type, plugin: '', min_version: '1.0.0', action: '' };
     case 'text': return { type, text: 'Hello', press_enter: false };
     case 'media': return { type, command: 'play_pause' };
     case 'system': return { type, command: 'undo' };
@@ -284,15 +287,15 @@ export function timerDuration(seconds: number): string {
   return hours > 0 ? `${hours}:${pad(minutes)}:${pad(seconds % 60)}` : `${minutes}:${pad(seconds % 60)}`;
 }
 
-export type ConditionKey = 'obs_streaming' | 'obs_recording' | 'obs_virtual_camera' | 'obs_replay_buffer' | 'output_muted' | 'output_volume_at_least' | 'timer_running' | 'focused_app' | 'variable_is' | 'variable_at_least';
-// Picker order. The phrase pair is [true, false] for a yes/no condition and finishes "If …" in the editor and the key label.
+export type ConditionKey = 'obs_streaming' | 'obs_recording' | 'obs_virtual_camera' | 'obs_replay_buffer' | 'output_muted' | 'output_volume_at_least' | 'timer_running' | 'focused_app' | 'variable_is' | 'variable_at_least' | 'plugin';
+// Picker order of the built-in tests (a plugin's conditions are listed after them, from the installed manifests). The phrase pair is [true, false] for a yes/no condition and finishes "If …" in the editor and the key label.
 export const conditionKeys: ReadonlyArray<readonly [ConditionKey, string]> = [
   ['output_muted', 'The output is muted'], ['output_volume_at_least', 'The output volume is at least'], ['timer_running', 'A timer is running'], ['focused_app', 'The front app is'],
   ['variable_is', 'A variable is'], ['variable_at_least', 'A number variable is at least'],
   ['obs_recording', 'OBS is recording'], ['obs_streaming', 'OBS is streaming'],
   ['obs_virtual_camera', 'The OBS virtual camera is on'], ['obs_replay_buffer', 'The OBS replay buffer is running'],
 ];
-type YesNoKey = Exclude<ConditionKey, 'output_volume_at_least' | 'focused_app' | 'variable_is' | 'variable_at_least'>;
+type YesNoKey = Exclude<ConditionKey, 'output_volume_at_least' | 'focused_app' | 'variable_is' | 'variable_at_least' | 'plugin'>;
 const conditionPhrases: Record<YesNoKey, readonly [string, string]> = {
   obs_streaming: ['OBS is streaming', 'OBS is not streaming'],
   obs_recording: ['OBS is recording', 'OBS is not recording'],
@@ -304,9 +307,10 @@ const conditionPhrases: Record<YesNoKey, readonly [string, string]> = {
 export function conditionKey(when: LeafCondition): ConditionKey {
   return Object.keys(when)[0] as ConditionKey;
 }
-// The single value of a yes/no, number or text test; a variable test holds a name and a value instead.
-export function conditionValue(when: LeafCondition): boolean | number | string | { name: string; value: VariableValue } {
-  return (when as Record<string, boolean | number | string | { name: string; value: VariableValue }>)[conditionKey(when)];
+// The single value of a yes/no, number or text test; a variable test holds a name and a value instead, a plugin test its
+// plugin condition.
+export function conditionValue(when: LeafCondition): boolean | number | string | { name: string; value: VariableValue } | PluginCondition {
+  return (when as Record<string, boolean | number | string | { name: string; value: VariableValue } | PluginCondition>)[conditionKey(when)];
 }
 // Reads from OBS, so needs the connection set up in Settings; the other conditions read this Mac or the service.
 export const conditionUsesObs = (when: Condition): boolean => isGroup(when) ? groupItems(when).some(conditionUsesObs) : conditionKey(when).startsWith('obs_');
@@ -318,6 +322,7 @@ const leafLabel = (when: LeafCondition): string => {
   if (key === 'focused_app') return `the front app is ${value}`;
   if (key === 'variable_is') { const { name, value: wanted } = value as { name: string; value: VariableValue }; return `${name || 'a variable'} is ${variableText(wanted)}`; }
   if (key === 'variable_at_least') { const { name, value: wanted } = value as { name: string; value: VariableValue }; return `${name || 'a variable'} is at least ${wanted}`; }
+  if (key === 'plugin') { const check = value as PluginCondition; return `${check.plugin || 'a plugin'}: ${check.condition || 'a condition'} ${check.value ? 'holds' : 'does not hold'}`; }
   return conditionPhrases[key as YesNoKey][value ? 0 : 1];
 };
 // "OBS is recording", "the output is not muted and OBS is streaming", "takes is at least 3 and (a timer is running or OBS is recording)".
@@ -333,6 +338,8 @@ export function defaultCondition(key: ConditionKey, variables: ReadonlyArray<Var
     case 'focused_app': return { focused_app: 'com.apple.finder' };
     case 'variable_is': { const first = variables[0]; return { variable_is: { name: first?.name ?? '', value: first?.value ?? false } }; }
     case 'variable_at_least': return { variable_at_least: { name: variables.find(variable => typeof variable.value === 'number')?.name ?? '', value: 1 } };
+    // No plugin yet: the editor picks one from the installed manifests (pluginConditionWith).
+    case 'plugin': return { plugin: { plugin: '', min_version: '1.0.0', condition: '', value: true } };
     default: return { [key]: true } as LeafCondition;
   }
 }
@@ -429,6 +436,165 @@ function terminalLineIssue(value: string): string | null {
   if (invisibleTextCharacter.test(value)) return 'Remove invisible characters (zero-width spaces, direction marks, line or paragraph separators).';
   return null;
 }
+
+// A run_program's limits (Action::MAX_RUN_PROGRAM_* in profile.rs): the path, each argument and the folder are one line
+// of at most 512 bytes; at most 32 arguments, 4096 bytes in all.
+export const maxRunProgramBytes = maxTerminalCommandBytes;
+export const maxRunProgramArgs = 32;
+export const maxRunProgramArgsBytes = 4096;
+export type RunProgramAction = Extract<BindingAction, { type: 'run_program' }>;
+
+// Mirrors the run_program program check in profile.rs: a file path starting with / or ~/.
+export function programPathIssue(program: string): string | null {
+  if (!program) return 'Enter the full path of the program, such as /usr/bin/say.';
+  if (!(program.startsWith('/') || program.startsWith('~/')) || program.endsWith('/')) return 'Use the full path of a file, starting with / or ~/.';
+  return terminalLineIssue(program);
+}
+
+// Mirrors the run_program argument checks in profile.rs. An empty argument is allowed.
+export function programArgIssue(arg: string): string | null {
+  return arg ? terminalLineIssue(arg) : null;
+}
+
+// Mirrors variable_references in profile.rs: the variable names a text with variables on refers to, in order, or null
+// when a {{ does not begin a reference {{name}} (a variable name, no spaces). There is no escape for a literal {{.
+export function variableReferences(text: string): string[] | null {
+  const names: string[] = [];
+  let rest = text;
+  for (let start = rest.indexOf('{{'); start !== -1; start = rest.indexOf('{{')) {
+    const after = rest.slice(start + 2);
+    const end = after.indexOf('}}');
+    const name = end === -1 ? '' : after.slice(0, end);
+    if (!/^[a-z][a-z0-9_]{0,31}$/.test(name)) return null;
+    names.push(name);
+    rest = after.slice(end + 2);
+  }
+  return names;
+}
+
+// With variables on, every reference in a run_program argument must be well formed and name a declared variable
+// (Action::validate and Action::check_variables in profile.rs).
+export function programVariableIssue(arg: string, declared: ReadonlyArray<string>): string | null {
+  const names = variableReferences(arg);
+  if (!names) return 'Each {{ must begin a variable such as {{name}}, with no spaces inside.';
+  const missing = names.find(name => !declared.includes(name));
+  return missing ? `Variable ${missing} is not declared.` : null;
+}
+
+// The {{name}} references of a run_program, in order with repeats (each is a use), from its well-formed arguments; none
+// with variables off. malformed is set when an argument holds a {{ that begins no reference (the service refuses it).
+// The one reading of the rule for the editor, the use counts and the Execute confirmation.
+export function programReferences(action: { args?: unknown; variables?: unknown }): { names: string[]; malformed: boolean } {
+  const result = { names: [] as string[], malformed: false };
+  if (action.variables !== true) return result;
+  for (const arg of Array.isArray(action.args) ? action.args : []) {
+    const names = variableReferences(String(arg));
+    if (names) result.names.push(...names); else result.malformed = true;
+  }
+  return result;
+}
+
+// Mirrors validate_plugin_action in plugin.rs: the checks that do not need the plugin's manifest. A plugin condition
+// passes its condition id as action and noun 'condition', so the messages name what it is.
+const pluginIdPattern = /^(?=.{1,128}$)[a-z0-9][a-z0-9-]{0,62}(\.[a-z0-9][a-z0-9-]{0,62})+$/;
+const pluginActionPattern = /^[a-z][a-z0-9_.-]{0,63}$/;
+const pluginParamPattern = /^[a-z][a-z0-9_]{0,31}$/;
+const utf8Length = (text: string) => new TextEncoder().encode(text).length;
+export function pluginIssue(action: { plugin?: unknown; min_version?: unknown; action?: unknown; params?: unknown; variables?: unknown }, noun: 'action' | 'condition' = 'action'): string | null {
+  if (typeof action.plugin !== 'string' || !pluginIdPattern.test(action.plugin)) return 'Choose a plugin.';
+  if (typeof action.min_version !== 'string' || !/^\d{1,9}\.\d{1,9}\.\d{1,9}$/.test(action.min_version)) return 'The minimum plugin version must be MAJOR.MINOR.PATCH.';
+  if (typeof action.action !== 'string' || !pluginActionPattern.test(action.action)) return `Choose one of the plugin's ${noun}s.`;
+  const params = action.params ?? {};
+  if (typeof params !== 'object' || params === null || Array.isArray(params)) return 'Plugin parameters must be an object.';
+  const entries = Object.entries(params as Record<string, unknown>);
+  if (entries.length > 32) return `A plugin ${noun} takes at most 32 parameters.`;
+  let total = 0;
+  for (const [name, value] of entries) {
+    if (!pluginParamPattern.test(name)) return `Parameter name ${name} is not valid.`;
+    if (typeof value === 'string') {
+      if (utf8Length(value) > 2048 || /\p{Cc}/u.test(value) || invisibleTextCharacter.test(value)) return `Parameter ${name} must be one line of at most 2048 bytes without control or invisible characters.`;
+      total += utf8Length(value);
+    } else if (typeof value !== 'boolean' && (typeof value !== 'number' || !Number.isFinite(value))) return `Parameter ${name} must be text, a number or on / off.`;
+  }
+  if (total > 8192) return 'Plugin text parameters must total at most 8192 bytes.';
+  const variables = action.variables ?? [];
+  if (!Array.isArray(variables)) return 'Plugin variables must be a list of parameter names.';
+  for (const [index, name] of variables.entries()) {
+    if (variables.indexOf(name) !== index) return `Parameter ${String(name)} is listed twice for variables.`;
+    const value = (params as Record<string, unknown>)[String(name)];
+    if (typeof value !== 'string') return `Parameter ${String(name)} takes variables but is not text.`;
+    if (!variableReferences(value)) return `Parameter ${String(name)}: every {{ must begin a variable reference such as {{name}}.`;
+  }
+  return null;
+}
+
+// One use of a plugin in a profile: a plugin action, or a plugin condition an if / else tests. Both are asked of the
+// plugin when pressed, start it for a Live run and carry parameters, so everything that counts plugin actions (the
+// Execute confirmation, variable uses, imports, starters) walks these instead. `id` is the action's or condition's id.
+// The fields are as the profile holds them: a profile parsed from a run snapshot or an import may hold partial shapes.
+export interface PluginUse {
+  kind: 'action' | 'condition'; plugin: string; min_version: string; id: string;
+  params?: Record<string, PluginValue>; variables?: string[];
+  // A condition's answer it holds for.
+  value?: boolean;
+}
+const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
+const listOf = (value: unknown): unknown[] => (Array.isArray(value) ? value : []);
+const pluginUse = (kind: PluginUse['kind'], use: Record<string, unknown>): PluginUse => ({
+  kind, plugin: use.plugin, min_version: use.min_version, id: kind === 'action' ? use.action : use.condition,
+  ...(use.params !== undefined ? { params: use.params } : {}), ...(use.variables !== undefined ? { variables: use.variables } : {}),
+  ...(kind === 'condition' ? { value: use.value } : {}),
+} as PluginUse);
+
+// The plugin conditions of a condition tree, in reading order, nested groups included.
+export function conditionPluginUses(when: unknown, into: PluginUse[] = [], depth = 0): PluginUse[] {
+  if (!isRecord(when) || depth > 8) return into;
+  if (isRecord(when.plugin)) into.push(pluginUse('condition', when.plugin));
+  for (const item of [...listOf(when.all), ...listOf(when.any)]) conditionPluginUses(item, into, depth + 1);
+  return into;
+}
+
+// Every plugin use of an action and everything inside it (multi-action steps, if / else tests and both branches), in
+// profile order: an if / else's tests before its steps.
+export function pluginUses(action: unknown, into: PluginUse[] = [], depth = 0): PluginUse[] {
+  if (!isRecord(action) || depth > 8) return into;
+  if (action.type === 'plugin') into.push(pluginUse('action', action));
+  if (action.type === 'conditional') conditionPluginUses(action.when, into);
+  for (const step of [...listOf(action.actions), ...listOf(action.then), ...listOf(action.else)]) pluginUses(step, into, depth + 1);
+  return into;
+}
+
+// The {{name}} references of a plugin action (or plugin condition), from the text parameters it lists in variables, in order with repeats;
+// none when it lists none. malformed when a listed parameter is not text or holds a broken reference (the service
+// refuses the profile).
+export function pluginReferences(action: { params?: unknown; variables?: unknown }): { names: string[]; malformed: boolean } {
+  const result = { names: [] as string[], malformed: false };
+  const params = action.params && typeof action.params === 'object' ? action.params as Record<string, unknown> : {};
+  for (const name of Array.isArray(action.variables) ? action.variables : []) {
+    const value = params[String(name)];
+    const names = typeof value === 'string' ? variableReferences(value) : null;
+    if (names) result.names.push(...names); else result.malformed = true;
+  }
+  return result;
+}
+
+// A filled-in argument that starts with - fails the press unless the written argument does (fill_in_run_program_args in
+// profile.rs), so one that starts with a number or text variable can fail whenever its value is negative or begins
+// with -. A hint, not an issue: the value may never start with -.
+export function programDashHint(arg: string, declared: ReadonlyArray<{ name: string; value: unknown }>): string | null {
+  if (!arg.startsWith('{{')) return null;
+  const first = variableReferences(arg)?.[0];
+  const variable = declared.find(item => item.name === first);
+  if (!variable || typeof variable.value === 'boolean') return null;
+  return `When ${first} starts with - (${typeof variable.value === 'number' ? 'a negative number' : 'text such as --all'}), the press refuses to run the program. Write it as --option={{${first}}} if the program takes one.`;
+}
+
+export function programArgsIssue(args: ReadonlyArray<string>): string | null {
+  if (args.length > maxRunProgramArgs) return `Use at most ${maxRunProgramArgs} arguments.`;
+  if (args.reduce((total, arg) => total + utf8.encode(arg).length, 0) > maxRunProgramArgsBytes) return `The arguments may total at most ${maxRunProgramArgsBytes} bytes.`;
+  return null;
+}
+
 
 // Mirrors the terminal_command command check in profile.rs.
 export function terminalCommandIssue(command: string): string | null {

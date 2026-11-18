@@ -24,3 +24,6 @@ docs/tasks/
 
 node_modules/
 dist-release/
+
+# Python bytecode (the example plugin)
+__pycache__/

@@ -7,6 +7,9 @@ export const readyTimeoutMs = 8000;
 
 export type DemoPhase = 'idle' | 'starting' | 'running' | 'ending';
 export interface DemoEnd { reason: 'user' | 'module-stopped' | 'failed'; error?: string }
+// A turn of a knob, the dial or a roller, as the module reports it.
+export type Turn = 'clockwise' | 'counter_clockwise' | 'right' | 'left' | 'up' | 'down';
+const turns: readonly string[] = ['clockwise', 'counter_clockwise', 'right', 'left', 'up', 'down'];
 
 export interface DemoRuntimeOptions {
   invoke: Invoke;
@@ -29,6 +32,7 @@ export class DemoRuntime {
   private drawn = new Map<number, string>();
   private chain: Promise<unknown> = Promise.resolve();
   private onKey: (key: number) => void = () => {};
+  private onTurn: (control: number, turn: Turn) => void = () => {};
   private onEnd: (end: DemoEnd) => void = () => {};
   // Starts and their clean-ups run one after the other, so a start made right after a cancelled one (a page that
   // mounts twice) finds the module handed back first.
@@ -40,6 +44,12 @@ export class DemoRuntime {
   constructor(private readonly options: DemoRuntimeOptions) {}
 
   getPhase() { return this.phase; }
+
+  private second: DemoRuntime | null = null;
+
+  // The runtime for a second module a demo holds beside this one (its turns, say). Always the same one, so a demo that
+  // ends and starts again at once finds the second module handed back first, as with the first.
+  another(): DemoRuntime { return this.second ??= new DemoRuntime(this.options); }
 
   // Runs one pass of the display speed test on the demo's module (the backend times every write), reporting progress as
   // it goes. Resolves with the pass's numbers.
@@ -54,7 +64,8 @@ export class DemoRuntime {
 
   // Starts a demo on the module at `pathHex`. Resolves once the module is ready to draw on, or rejects (and leaves
   // everything as it was: the session has its module back).
-  async start(pathHex: string, onKey: (key: number) => void, onEnd: (end: DemoEnd) => void): Promise<void> {
+  // A module the demo only reads (knobs, rollers) is started with `drawn: false`: it has no software mode.
+  async start(pathHex: string, onKey: (key: number) => void, onEnd: (end: DemoEnd) => void, onTurn?: (control: number, turn: Turn) => void, drawn = true): Promise<void> {
     const request = { cancelled: false };
     this.pending = request;
     const previous = this.lifecycle;
@@ -63,16 +74,17 @@ export class DemoRuntime {
     await previous.catch(() => {});
     try {
       if (request.cancelled) throw new Error('The demo was cancelled.');
-      await this.begin(pathHex, onKey, onEnd);
+      await this.begin(pathHex, onKey, onEnd, onTurn, drawn);
     } finally { if (this.pending === request) this.pending = null; release(); }
   }
 
-  private async begin(pathHex: string, onKey: (key: number) => void, onEnd: (end: DemoEnd) => void): Promise<void> {
+  private async begin(pathHex: string, onKey: (key: number) => void, onEnd: (end: DemoEnd) => void, onTurn: ((control: number, turn: Turn) => void) | undefined, drawn: boolean): Promise<void> {
     if (this.phase !== 'idle') throw new Error('A demo is already running.');
     this.phase = 'starting';
     this.pathHex = pathHex;
     this.serviceId = serviceIdFor(pathHex);
     this.onKey = onKey;
+    this.onTurn = onTurn ?? (() => {});
     this.onEnd = onEnd;
     this.drawn.clear();
     const timers = { set: this.options.setTimeout ?? ((callback, ms) => setTimeout(callback, ms)), clear: this.options.clearTimeout ?? (handle => clearTimeout(handle as ReturnType<typeof setTimeout>)) };
@@ -87,7 +99,7 @@ export class DemoRuntime {
         this.options.listen('demo://record', event => this.onRecord(event.payload, ready)),
         this.options.listen('demo://status', event => this.onStatus(event.payload, failed)),
       ]);
-      await this.options.invoke<string>('demo_start', { pathHex });
+      await this.options.invoke<string>('demo_start', drawn ? { pathHex } : { pathHex, drawn });
       await readiness;
     } catch (reason) {
       timers.clear(timeout);
@@ -126,9 +138,15 @@ export class DemoRuntime {
       return;
     }
     if (this.phase !== 'running') return;
-    const wasRunning = this.phase === 'running';
-    await this.finish(true);
-    if (wasRunning) this.onEnd({ reason, ...(error ? { error } : {}) });
+    // The end joins the starts' queue, so a start made while it is still handing the module back waits for it.
+    const previous = this.lifecycle;
+    let release: () => void = () => {};
+    this.lifecycle = new Promise<void>(resolve => { release = resolve; });
+    try {
+      await previous.catch(() => {});
+      await this.finish(true);
+    } finally { release(); }
+    this.onEnd({ reason, ...(error ? { error } : {}) });
   }
 
   private async finish(notify: boolean) {
@@ -148,8 +166,11 @@ export class DemoRuntime {
   private onRecord(payload: unknown, ready: () => void) {
     const { service_id: id, record } = (payload ?? {}) as { service_id?: unknown; record?: { type?: unknown; event?: { control?: unknown; gesture?: unknown } } };
     if (id !== this.serviceId || !record) return;
-    if (record.type === 'service_start') ready();
-    else if (record.type === 'event' && record.event?.gesture === 'pressed' && Number.isInteger(record.event.control) && this.phase === 'running') this.onKey(record.event.control as number);
+    if (record.type === 'service_start') { ready(); return; }
+    if (record.type !== 'event' || !record.event || !Number.isInteger(record.event.control) || this.phase !== 'running') return;
+    const { control, gesture } = record.event as { control: number; gesture?: unknown };
+    if (gesture === 'pressed') this.onKey(control);
+    else if (typeof gesture === 'string' && turns.includes(gesture)) this.onTurn(control, gesture as Turn);
   }
 
   private onStatus(payload: unknown, failed: (error: Error) => void) {

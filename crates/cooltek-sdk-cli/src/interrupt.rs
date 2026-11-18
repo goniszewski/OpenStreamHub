@@ -35,6 +35,9 @@ pub fn install() -> Result<Arc<AtomicBool>, String> {
     ctrlc::set_handler(move || {
         if signal_received(&signals, &signal) {
             eprintln!("second interrupt received; exiting without cleanup");
+            // A running program leads a process group of its own, which the
+            // caller's kill of this process group would not reach.
+            cooltek_sdk_service::kill_running_programs();
             std::process::exit(FORCED_EXIT_CODE);
         }
     })

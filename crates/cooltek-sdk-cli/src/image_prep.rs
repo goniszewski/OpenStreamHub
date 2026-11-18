@@ -302,7 +302,9 @@ pub fn within_frame_budget(
     within_budget(options, KeyArtwork::MAX_FRAME_BYTES, encode)
 }
 
-fn within_budget(
+/// Encodes at the requested quality, then steps the quality down until the
+/// image fits `max_bytes`.
+pub fn within_budget(
     mut options: PrepareOptions,
     max_bytes: usize,
     mut encode: impl FnMut(PrepareOptions) -> Result<Vec<u8>, String>,

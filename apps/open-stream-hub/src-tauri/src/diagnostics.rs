@@ -301,7 +301,7 @@ const OBS_NAME_FIELDS: &[&str] = &["scene", "source", "filter", "name", "collect
 
 /// Replaces user-authored action payloads wherever an action object appears
 /// (bindings, `multi_action` steps, keypad tiles, dial functions, client
-/// activity): `text` snippets, `timer` labels, `terminal_command` command lines and directories, OBS scene, source, filter,
+/// activity): `text` snippets, `timer` labels, `terminal_command` command lines and directories, `run_program` paths, arguments and directories, `plugin` action and plugin condition text parameters, OBS scene, source, filter,
 /// scene collection, profile and input names and Streamlabs scene, collection and
 /// source names become `<N chars>`, and `open_url` URLs keep only their origin. Long
 /// enough raw values are also queued for the text scrub; shorter OBS names
@@ -319,6 +319,9 @@ fn redact_action_payloads(
                 Some("timer") => &["label"],
                 // The command line can carry tokens and the directory a user name.
                 Some("terminal_command") => &["command", "directory"],
+                // The path and directory can name the user; arguments are
+                // handled below, as a list.
+                Some("run_program") => &["program", "directory"],
                 Some("obs_scene") => &["scene"],
                 Some("obs_filter") => &["source", "filter"],
                 Some("obs_scene_collection" | "obs_profile") => &["name"],
@@ -356,6 +359,39 @@ fn redact_action_payloads(
                         replacements.push((prefix, "<name…>".into()));
                     }
                     *raw = redacted;
+                }
+            }
+            // Plugin text parameters can carry tokens, names or addresses: each
+            // becomes its length. Numbers, bools and the ids stay. A plugin
+            // condition (`{"plugin":{"plugin":…,"condition":…,"params":…}}`)
+            // has no `type`, but names its plugin and condition.
+            let plugin_condition = map.get("plugin").is_some_and(Value::is_string)
+                && map.get("condition").is_some_and(Value::is_string);
+            if (map.get("type").and_then(Value::as_str) == Some("plugin") || plugin_condition)
+                && let Some(Value::Object(params)) = map.get_mut("params")
+            {
+                for param in params.values_mut() {
+                    if let Value::String(raw) = param {
+                        let redacted = format!("<{} chars>", raw.chars().count());
+                        if raw.chars().count() >= MIN_SCRUBBED_PAYLOAD_CHARS {
+                            replacements.push((raw.clone(), redacted.clone()));
+                        }
+                        *raw = redacted;
+                    }
+                }
+            }
+            // Program arguments can carry tokens: each becomes its length.
+            if map.get("type").and_then(Value::as_str) == Some("run_program")
+                && let Some(Value::Array(args)) = map.get_mut("args")
+            {
+                for arg in args.iter_mut() {
+                    if let Value::String(raw) = arg {
+                        let redacted = format!("<{} chars>", raw.chars().count());
+                        if raw.chars().count() >= MIN_SCRUBBED_PAYLOAD_CHARS {
+                            replacements.push((raw.clone(), redacted.clone()));
+                        }
+                        *raw = redacted;
+                    }
                 }
             }
             for (key, item) in map.iter_mut() {
@@ -1490,6 +1526,12 @@ mod tests {
                 { "type": "action", "action": { "type": "text", "text": "keypad tile snippet", "press_enter": false } },
                 { "type": "action", "action": { "type": "timer", "seconds": 300, "label": "call the doctor", "sound": "glass" } },
                 { "type": "action", "action": { "type": "terminal_command", "app": "iterm2", "command": "codex --api-key sk-live-123", "directory": "~/clients/acme" } },
+                { "type": "action", "action": { "type": "run_program", "program": "~/bin/deploy-acme", "args": ["--token", "tok-live-98765"], "directory": "~/clients/globex" } },
+                { "type": "action", "action": { "type": "plugin", "plugin": "com.example.lights", "min_version": "1.0.0", "action": "set", "params": { "token": "ha-live-55555", "level": 40, "fade": true } } },
+                { "type": "action", "action": { "type": "conditional", "when": { "any": [
+                    { "output_muted": true },
+                    { "plugin": { "plugin": "com.example.lights", "min_version": "1.0.0", "condition": "is_on", "params": { "entity": "light.attic-hideout", "level": 40 }, "value": true } },
+                ] }, "then": [{ "type": "toggle_mute" }] } },
             ] }] },
             "dial_functions": [{ "name": "Links", "bindings": [
                 { "gesture": "right", "action": { "type": "open_url", "url": "https://dial.example.org/a/b" } },
@@ -1532,6 +1574,10 @@ mod tests {
             "call the doctor",
             "sk-live-123",
             "clients/acme",
+            "tok-live-98765",
+            "attic-hideout",
+            "deploy-acme",
+            "clients/globex",
             "Private call",
             "Interview guest",
         ] {
@@ -1546,6 +1592,22 @@ mod tests {
         assert_eq!(
             terminal,
             &json!({ "type": "terminal_command", "app": "iterm2", "command": "<27 chars>", "directory": "<14 chars>" })
+        );
+        let program = &bundle.value["profile"]["keypad"]["pages"][0]["slots"][3]["action"];
+        assert_eq!(
+            program,
+            &json!({ "type": "run_program", "program": "<17 chars>", "args": ["<7 chars>", "<14 chars>"], "directory": "<16 chars>" })
+        );
+        let plugin = &bundle.value["profile"]["keypad"]["pages"][0]["slots"][4]["action"];
+        assert_eq!(
+            plugin,
+            &json!({ "type": "plugin", "plugin": "com.example.lights", "min_version": "1.0.0", "action": "set", "params": { "token": "<13 chars>", "level": 40, "fade": true } })
+        );
+        let asked =
+            &bundle.value["profile"]["keypad"]["pages"][0]["slots"][5]["action"]["when"]["any"][1];
+        assert_eq!(
+            asked,
+            &json!({ "plugin": { "plugin": "com.example.lights", "min_version": "1.0.0", "condition": "is_on", "params": { "entity": "<19 chars>", "level": 40 }, "value": true } })
         );
         let profile = &bundle.value["profile"];
         assert_eq!(profile["bindings"][0]["action"]["text"], "<19 chars>");

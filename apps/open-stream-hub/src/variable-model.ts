@@ -1,7 +1,8 @@
-import type { BindingAction, BranchStep, Condition, KeypadSlot, Profile, Variable, VariableKind } from './contracts';
+import type { BindingAction, BranchStep, Condition, KeypadSlot, PluginValue, Profile, Variable, VariableKind } from './contracts';
 import type { BindingEntry } from './binding-model';
 import { listBindings } from './binding-model';
 import { groupItems, groupMode, isGroup, variableKind } from './flow-model';
+import { pluginReferences, programReferences } from './action-model';
 
 // Which variables the actions of a profile use, and the edits that keep every use in step with the declarations.
 
@@ -11,8 +12,15 @@ const conditionNames = (when: Condition, into: string[]): string[] => {
   if (isGroup(when)) { groupItems(when).forEach(item => conditionNames(item, into)); return into; }
   if ('variable_is' in when) into.push(when.variable_is.name);
   else if ('variable_at_least' in when) into.push(when.variable_at_least.name);
+  // Each {{name}} in a text parameter a plugin condition fills in is a use, as for a plugin action.
+  else if ('plugin' in when) into.push(...pluginReferences(when.plugin).names);
   return into;
 };
+
+// Every text parameter renamed, as for a plugin action (renameAction).
+const renameParams = <T extends { params?: Record<string, PluginValue> }>(use: T, from: string, to: string): T =>
+  (use.params ? { ...use, params: Object.fromEntries(Object.entries(use.params).map(([name, value]) =>
+    [name, typeof value === 'string' ? value.split(`{{${from}}}`).join(`{{${to}}}`) : value])) } : use);
 
 // Every variable name an action (and everything inside it) refers to, once per use.
 export function actionVariableNames(action: AnyAction | null | undefined, into: string[] = []): string[] {
@@ -24,6 +32,10 @@ export function actionVariableNames(action: AnyAction | null | undefined, into: 
       conditionNames(action.when, into);
       action.then.concat(action.else ?? []).forEach(step => actionVariableNames(step, into));
       break;
+    // With variables on, each {{name}} in an argument is a use; malformed text (refused by the service) names none.
+    case 'run_program': into.push(...programReferences(action).names); break;
+    // Each {{name}} in a text parameter the action fills in is a use, the same way.
+    case 'plugin': into.push(...pluginReferences(action).names); break;
     default: break;
   }
   return into;
@@ -70,6 +82,7 @@ const renameCondition = (when: Condition, from: string, to: string): Condition =
   }
   if ('variable_is' in when && when.variable_is.name === from) return { variable_is: { ...when.variable_is, name: to } };
   if ('variable_at_least' in when && when.variable_at_least.name === from) return { variable_at_least: { ...when.variable_at_least, name: to } };
+  if ('plugin' in when) return { plugin: renameParams(when.plugin, from, to) };
   return when;
 };
 
@@ -82,6 +95,13 @@ function renameAction<A extends AnyAction>(action: A, from: string, to: string):
       const next = { ...step, when: renameCondition(step.when, from, to), then: step.then.map(item => renameAction(item, from, to)) };
       return (step.else ? { ...next, else: step.else.map(item => renameAction(item, from, to)) } : next) as A;
     }
+    // Names are whole tokens between {{ and }}, so replacing the reference renames exactly that variable. With variables
+    // off the references are renamed too, so turning variables back on still names declared variables. Changed
+    // arguments are a new program for the Execute confirmation either way.
+    case 'run_program':
+      return (step.args ? { ...step, args: step.args.map(arg => arg.split(`{{${from}}}`).join(`{{${to}}}`)) } : step) as A;
+    // Every text parameter, so a parameter that does not take variables keeps reading the same once it does.
+    case 'plugin': return renameParams(step, from, to) as A;
     default: return action;
   }
 }

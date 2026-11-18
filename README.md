@@ -7,6 +7,7 @@
     <a href="#install">Install</a> ·
     <a href="#quick-start">Quick start</a> ·
     <a href="#hardware-support">Hardware support</a> ·
+    <a href="#plugins">Plugins</a> ·
     <a href="#documentation">Documentation</a> ·
     <a href="#development">Development</a>
   </p>
@@ -56,26 +57,39 @@ Tap or click any screenshot to open it at full size.
 | Feature in the official Windows app | OpenStreamHub on macOS |
 | --- | --- |
 | Keypad, knob and dial input | Implemented and tested on hardware. See [module support](#hardware-support) for limits. |
-| Two-roller input | Decoder implemented. Windows input confirmed by capture; macOS receives no reports. Unresolved. |
+| Two-roller input | Implemented and tested on hardware since 0.4.0: both rollers and both directions, and recovery after a replug. |
 | Five-fader input | Implemented and tested on hardware (all five faders, 0 at the bottom to 100 at the top). Fader 1 driving a real OBS input's volume follows OBS's own slider. Jitter at rest and the microphone-volume action are checked in the [hardware results](docs/masterhub-hardware-results.md). |
 | Profiles, bindings and keypad folders | Implemented, including nested folders, Back navigation and profile switching. Folder redraws tested on hardware. |
-| Key images and animations | Per-key static artwork and animation sequences implemented. Static artwork tested on hardware; animation playback still needs hardware acceptance. |
+| Key images and animations | Per-key static artwork and GIF animations implemented and tested on hardware, including static and animated keys mixed across folders. |
 | Dial display and function switching | Image uploads, function labels, clocks and CPU display implemented and tested on hardware. Full display parity is incomplete. |
 | Volume, mute, shortcuts, text, apps, URLs and media controls | Implemented; execution and macOS permission validation vary by action. See the [action catalogue](docs/masterhub-actions.md). |
 | Multi-action and recorded key macros | Multi-action sequences and the key macro recorder implemented; the recorder still needs a hardware-session check. |
-| Countdown timers | Implemented with notification and sound; remaining time is not displayed on the key. |
+| Countdown timers | Implemented with notification and sound; the remaining time is drawn on the key while the app drives the display (tested on hardware). |
 | OBS Studio actions | All 17 official OBS actions are implemented: scenes, scene collection and profile, virtual camera, replay buffer, recording (including pause), streaming, studio mode and transition, filter and source visibility, input mute, volume (absolute, step and fader-driven), media sources and screenshots to `~/Pictures`. Checked on a real OBS 5.7.4: the connection, a fader driving an input's volume, and recording, pause, screenshot, virtual camera, replay buffer, studio mode and transition, mute, volume step and media-source keys. Streaming, scenes, collections, profiles, filters and source visibility are only tested against a fake server. |
 | Streamer starter profile | Record, pause, replay, screenshot, studio mode and virtual-camera keys, plus "Go live" and "End stream" keys that need two presses within three seconds. Scene, microphone and desktop-audio keys name your OBS items, so you add those in the editor. |
 | Modules start by themselves | While module control is App, every connected control module (keys, dial, knobs, faders, rollers) starts a session on its own. |
-| Twitch, Discord, Streamlabs and application-specific integrations | Not implemented as equivalent integrations. Some shortcuts can be assigned manually. |
+| Streamlabs Desktop | All 7 official actions implemented (recording, streaming, studio mode, transition, scenes, source visibility, audio), tested only against a fake server. |
+| Twitch, Discord and application-specific integrations | Not implemented as equivalent integrations. Some shortcuts can be assigned manually, and [plugins](#plugins) can add them. |
 | Official `.mhz` profile import/export | Import implemented with a compatibility report and review before execution; real export compatibility remains to be validated. `.mhz` export missing. Own-format JSON import/export implemented. |
 | Lighting and brightness | Lighting page for the base, knobs and faders, and screen backlight and colour for the dial, including while a profile runs. Per-profile screen brightness for the dial and the key screens (software dimming on keys) tested on hardware. Base, knob and fader lighting in the app still needs more hardware checks. |
 | Firmware updates | Not supported. |
 | Suspend/resume and reconnect | Session handling implemented; dial dry-run reconnect tested. Sleep/wake and other lifecycle paths still need hardware validation. |
 
-OpenStreamHub also includes dry-run action previews, raw capture and offline replay, local diagnostic bundles, and optional focused-app profile rules. These are additional tools rather than Windows parity requirements.
+OpenStreamHub also includes dry-run action previews, raw capture and offline replay, local diagnostic bundles, optional focused-app profile rules, if / else flows with variables, and [plugins](#plugins). These are additional tools rather than Windows parity requirements.
 
 See the [detailed parity tracker](docs/windows-parity-gaps.md) for protocol references and outstanding work. Some entries there describe earlier implementation stages; the [hardware results](docs/masterhub-hardware-results.md) record subsequent device tests.
+
+## Plugins
+
+A plugin adds actions, if / else tests and key pictures of its own: a separate program, in any language, that the app starts while a Live profile uses it. Install, update and remove plugins in **Settings → Plugins**; nothing runs until you review what a plugin declares and enable it.
+
+- **[Now Playing](plugins/com.github.goniszewski.nowplaying)** (official): Apple Music and Spotify on one key, with the cover as its picture. Short press plays or pauses, long press goes back, double press skips.
+- **[Claude Code](plugins/com.github.goniszewski.claudecode)** (official): your Claude Code sessions on keys, working, waiting for you or done, and a context and cost meter. A press brings the session's terminal to the front and, if you turn it on, answers its permission prompt once you can see it.
+- **[Notify example](examples/plugins/com.example.notify)**: a small plugin to learn from, showing actions, input events, a condition and a drawn key.
+- **[Writing a plugin](docs/plugins.md)**: the manifest, the protocol and the limits.
+
+> [!WARNING]
+> A plugin runs as you and can do anything you can, including using the network. Install plugins only from authors you trust.
 
 ## Install
 
@@ -137,7 +151,7 @@ Support below describes the current macOS work. A decoder or editor alone does n
 | 15-key IPS keypad · M4315 | Press/release input, key artwork, nested folder redraws and Back navigation tested on hardware. Physical key mapping checked at selected positions. |
 | 3-knob module · M003K | Rotation and press tested in default mode; physical mapping verified with the single knob on top. |
 | IPS dial · M131E | Rotation, press, display faces, image upload, backlight and color tested. App dry-run reconnect tested. |
-| 2-roller scroll module · M032LE | Windows capture confirms both rollers send input. macOS readers still receive no reports; investigation continues. |
+| 2-roller scroll module · M032LE | Both rollers and both directions tested on one unit since 0.4.0: its firmware reports only after a HID SET_IDLE request, which the SDK now sends. Recovers after a replug; sleep/wake not verified. |
 | 5-fader module · M005S | Input tested on all five faders (0 to 100); drives an OBS input's volume along OBS's slider scale. Starts automatically like the other modules. |
 | Base · M0064 | Discovered and recorded; observed reports are a constant heartbeat. |
 
@@ -146,6 +160,8 @@ These results come from one rig. Sleep/wake recovery, some lifecycle paths and s
 ## Privacy and telemetry
 
 OpenStreamHub has no telemetry, analytics, automatic crash reporting, account or cloud sync. Profiles, settings, artwork and diagnostic bundles are stored locally. Diagnostic bundles are created on demand and are yours to share; sensitive fields are redacted by default.
+
+**Plugins** are the exception to everything in this section: a plugin you enable is a separate program that runs as you and may use the network or collect data itself. None is installed or enabled by default; the review before enabling lists the hosts it says it connects to, but nothing enforces that list.
 
 The optional OBS integration connects only to OBS on the same Mac and is off until enabled. Its password is stored in your macOS Keychain, never in a file; after an app update macOS may ask once whether to allow access (choose Always Allow). Configured actions can open apps or web addresses when executed.
 
@@ -164,8 +180,9 @@ The app does not contact a remote service on its own. **Settings → Updates** h
 | [Diagnostics and replay](docs/masterhub-diagnostics.md) | [Session lifecycle](docs/masterhub-session-manager.md) |
 | [Display sync](docs/masterhub-display-sync.md) | [Release process](docs/release-process.md) |
 | [AI agent prompts](docs/agent-integration.md) | [Status keys](docs/status-keys.md) |
+| [Writing a plugin](docs/plugins.md) | [Plugin design](docs/plugins-design.md) |
 
-Try the [example profiles](examples/profiles/), including [macOS controls](examples/profiles/macos.json), [all modules](examples/profiles/all-modules.json), [keypad folders](examples/profiles/keypad-folders.json) and [dial functions](examples/profiles/dial-functions.json).
+Try the [example profiles](examples/profiles/), including [macOS controls](examples/profiles/macos.json), [all modules](examples/profiles/all-modules.json), [keypad folders](examples/profiles/keypad-folders.json) and [dial functions](examples/profiles/dial-functions.json), and the [example plugin](examples/plugins/com.example.notify).
 
 ## Development
 
@@ -175,7 +192,8 @@ The repository keeps the app, service and SDK together so protocol and profile c
 | --- | --- |
 | `apps/open-stream-hub/` | Tauri desktop app and React interface |
 | `crates/` | Rust SDK, binding service and command-line tools |
-| `examples/` | Example programs and profiles |
+| `examples/` | Example programs, profiles and the example plugin |
+| `plugins/` | Official plugins, each a folder to install from Settings → Plugins |
 | `docs/` | User guides, protocol research and validation records |
 
 Build and check the Rust workspace from the repository root:

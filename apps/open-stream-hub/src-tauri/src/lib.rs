@@ -22,6 +22,11 @@ mod menubar;
 mod mhz;
 mod migration;
 mod obs;
+mod pack_folder;
+mod plugin_host;
+mod plugin_install;
+mod plugin_secrets;
+mod plugins;
 mod power;
 #[cfg(target_os = "macos")]
 mod quit;
@@ -492,10 +497,15 @@ impl AppState {
     /// With an unreadable import list nothing is exported.
     fn export_profile(&self, request: ExportRequest) -> Result<export::ExportResult, String> {
         let app_data = self.app_data.as_deref().map_err(Clone::clone)?;
+        let mut request = request;
+        // Whether the content is flagged is asked of what the user exported, before secrets are taken out.
+        let given_hash = import_flags::content_hash(&request.profile);
+        // A profile saved before plugin secrets moved to the Keychain may still hold one; it never leaves in an export.
+        let dropped_secrets = plugins::strip_secrets(&mut request.profile, app_data);
         let hash = import_flags::content_hash(&request.profile);
         self.with_store(|store| {
             let records = self.imports.load()?;
-            let flagged = records.flagged_hashes.contains_key(&hash)
+            let flagged = records.flagged_hashes.contains_key(&given_hash)
                 || request
                     .source_profile_id
                     .as_deref()
@@ -508,7 +518,9 @@ impl AppState {
             }
             Ok(())
         })?;
-        export::export(&request.profile, app_data, export::now_seconds()?)
+        let mut result = export::export(&request.profile, app_data, export::now_seconds()?)?;
+        result.dropped_secrets = dropped_secrets;
+        Ok(result)
     }
 
     /// Deletes a saved profile. Its import record (if any) becomes a
@@ -807,6 +819,185 @@ fn create_pack_profile(
     state.create_pack_profile(profile, now_ms())
 }
 
+// The pack files in `<app data>/packs/`, read but not checked: the webview checks each with the shipped packs' rules.
+#[tauri::command(async)]
+fn list_folder_packs(state: State<'_, AppState>) -> Result<pack_folder::PackFolder, String> {
+    pack_folder::list(state.app_data.as_deref().map_err(Clone::clone)?)
+}
+
+// The plugins in `<app data>/plugins/`, each with its manifest or why it cannot be used, and its state while it runs.
+#[tauri::command(async)]
+fn list_plugins(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<plugins::Listing, String> {
+    let statuses = app
+        .try_state::<plugin_host::PluginHost>()
+        .map(|host| host.statuses())
+        .unwrap_or_default();
+    let approved = plugin_approvals(&app)?.read();
+    let secrets = app.state::<plugin_secrets::PluginSecrets>();
+    Ok(plugins::listing(
+        state.app_data.as_deref().map_err(Clone::clone)?,
+        statuses,
+        &approved,
+        &|plugin, param| secrets.is_set(plugin, param).ok(),
+    ))
+}
+
+fn plugin_approvals(
+    app: &tauri::AppHandle,
+) -> Result<tauri::State<'_, plugins::Approvals>, String> {
+    app.try_state::<plugins::Approvals>().ok_or_else(|| {
+        "the application data folder is not available, so no plugin can be enabled".into()
+    })
+}
+
+// Enables a plugin after the user reviewed its manifest in the first-enable dialog. `fingerprint` is the one the
+// dialog was opened with: when plugin.json changed since, nothing is enabled, so the user approves exactly what they
+// saw. A Live run that uses the plugin starts it at once.
+#[tauri::command(async)]
+fn enable_plugin(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    id: String,
+    fingerprint: String,
+) -> Result<(), String> {
+    let host = app.try_state::<plugin_host::PluginHost>();
+    // The host hears of the change under the approvals lock, so a quick enable and disable reach it in order.
+    plugins::enable(
+        state.app_data.as_deref().map_err(Clone::clone)?,
+        &*plugin_approvals(&app)?,
+        &id,
+        &fingerprint,
+        |current| {
+            if let Some(host) = &host {
+                host.set_approval(&id, Some(current));
+            }
+        },
+    )
+}
+
+// Removes a plugin's approval; a running instance stops at once.
+#[tauri::command(async)]
+fn disable_plugin(app: tauri::AppHandle, id: String) -> Result<(), String> {
+    let host = app.try_state::<plugin_host::PluginHost>();
+    plugins::disable(&*plugin_approvals(&app)?, &id, || {
+        if let Some(host) = &host {
+            host.set_approval(&id, None);
+        }
+    })
+}
+
+// Stores the value of a plugin's secret parameter in the Keychain, shared by every key and action of that plugin with
+// a secret of that id. The value is never returned; the listing says only whether one is set.
+#[tauri::command(async)]
+fn set_plugin_secret(
+    state: State<'_, AppState>,
+    secrets: State<'_, plugin_secrets::PluginSecrets>,
+    plugin: String,
+    param: String,
+    value: String,
+) -> Result<(), String> {
+    let (manifest, _) =
+        plugins::installed(state.app_data.as_deref().map_err(Clone::clone)?, &plugin)?;
+    manifest.check_secret(&param, &value)?;
+    secrets.set(&plugin, &param, &value)
+}
+
+#[tauri::command(async)]
+fn forget_plugin_secret(
+    state: State<'_, AppState>,
+    secrets: State<'_, plugin_secrets::PluginSecrets>,
+    plugin: String,
+    param: String,
+) -> Result<(), String> {
+    let (manifest, _) =
+        plugins::installed(state.app_data.as_deref().map_err(Clone::clone)?, &plugin)?;
+    if !manifest
+        .secret_params()
+        .iter()
+        .any(|declared| declared.id == param)
+    {
+        return Err(format!("{} has no secret parameter {param}", manifest.name));
+    }
+    secrets.forget(&plugin, &param)
+}
+
+// The system's folder dialog, to pick a plugin's folder to install. `None` when the user cancels.
+#[tauri::command(async)]
+fn choose_plugin_folder() -> Result<Option<String>, String> {
+    plugin_install::choose_folder()
+}
+
+// What installing the folder at `path` would do, for the install review: the plugin as it would be listed (its
+// approval and secrets as installing gives them), its files and size, and the installed copy it replaces.
+#[tauri::command(async)]
+fn review_plugin_install(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    path: String,
+) -> Result<plugin_install::InstallReview, String> {
+    let approved = plugin_approvals(&app)?.read();
+    let secrets = app.state::<plugin_secrets::PluginSecrets>();
+    plugin_install::review(
+        state.app_data.as_deref().map_err(Clone::clone)?,
+        &path,
+        &approved,
+        &|plugin, param| secrets.is_set(plugin, param).ok(),
+    )
+}
+
+// Installs (or updates) the plugin in the folder at `path` after the review. `fingerprint` is the reviewed
+// plugin.json's: when it changed since, nothing is installed. With `enable`, that plugin.json is also enabled.
+#[tauri::command(async)]
+fn install_plugin(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    path: String,
+    fingerprint: String,
+    enable: bool,
+) -> Result<(), String> {
+    let host = app.try_state::<plugin_host::PluginHost>();
+    plugin_install::install(
+        state.app_data.as_deref().map_err(Clone::clone)?,
+        &*plugin_approvals(&app)?,
+        host.as_deref(),
+        &path,
+        &fingerprint,
+        enable,
+    )
+}
+
+// Removes a plugin: stops it, removes its approval and Keychain secrets, deletes its folder and its data folder.
+#[tauri::command(async)]
+fn remove_plugin(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<(), String> {
+    let host = app.try_state::<plugin_host::PluginHost>();
+    plugin_install::remove(
+        state.app_data.as_deref().map_err(Clone::clone)?,
+        &*plugin_approvals(&app)?,
+        host.as_deref(),
+        &app.state::<plugin_secrets::PluginSecrets>(),
+        &id,
+    )
+}
+
+// Opens `<app data>/plugins/` in the Finder, creating it when missing.
+#[tauri::command(async)]
+fn open_plugins_folder(state: State<'_, AppState>) -> Result<(), String> {
+    plugins::open(state.app_data.as_deref().map_err(Clone::clone)?)
+}
+
+// Opens `<app data>/packs/` in the Finder, creating it when missing.
+#[tauri::command(async)]
+fn open_packs_folder(state: State<'_, AppState>) -> Result<(), String> {
+    pack_folder::open(state.app_data.as_deref().map_err(Clone::clone)?)
+}
+
 // A profile read from a JSON file in the app (the webview parses and checks the file first). One that opens a terminal
 // is created dry run only until the user allows it, like a pack's profile; any other is saved as a new profile.
 #[tauri::command(async)]
@@ -998,15 +1189,18 @@ fn set_led_lighting(
     Ok(written)
 }
 
-// A demo owns one 15-key module for as long as it plays. The module's own session, if it has one, lets go of it and
-// waits (`Reason::Demo`); the demo is an unmanaged run with no bindings, in software mode and in Test mode, so no key
-// press does anything on the Mac and no profile display is drawn over it. It draws on the keys through the run's
-// control channel (`demo_key_image`). `demo_end` stops it and the session starts again.
+// A demo owns the modules it plays on (the 15-key module, and for some a knob or roller module beside it) for as long
+// as it plays. Each module's own session, if it has one, lets go of it and waits (`Reason::Demo`); the demo is an
+// unmanaged run with no bindings in Test mode, so nothing a control does reaches the Mac. A module the demo draws on
+// (`drawn`, the default) runs in software mode, so no profile display is drawn over it, and is drawn through the run's
+// control channel (`demo_key_image`); one it only reads, such as knobs or rollers, which have no software mode, runs in
+// hardware mode. `demo_end` stops it and the session starts again.
 #[tauri::command(async)]
 fn demo_start(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
     path_hex: String,
+    drawn: Option<bool>,
 ) -> Result<String, String> {
     if state.sessions.is_closed() || state.services.is_closed() {
         return Err(service::SHUTTING_DOWN.into());
@@ -1022,7 +1216,7 @@ fn demo_start(
         profile: demo::blank_profile()?,
         path_hex: path_hex.clone(),
         execute: false,
-        software_mode: true,
+        software_mode: drawn.unwrap_or(true),
         profile_id: None,
         source_profile_id: None,
         display: None,
@@ -2127,9 +2321,47 @@ pub fn run() {
             }
             app.manage(menubar::MenubarState::open(app_data.as_deref().ok()));
             app.manage(turns::ModuleTurns::open(app_data.as_deref().ok()));
+            let plugins_dir = app_data.as_deref().ok().map(plugins::dir);
+            if let Some(plugins_dir) = &plugins_dir {
+                plugin_install::clean_leftovers(plugins_dir);
+            }
+            if let Ok(app_data) = app_data.as_deref() {
+                app.manage(plugins::Approvals::new(app_data));
+            }
+            let plugin_secrets = plugin_secrets::PluginSecrets::keychain();
+            app.manage(plugin_secrets.clone());
             app.manage(AppState::open(app_data));
             menubar::init(app.handle());
             let state = app.state::<AppState>();
+            // Plugin processes, started for the module runs that execute a profile using them.
+            #[cfg(unix)]
+            if let Some(plugins_dir) = plugins_dir {
+                let handle = app.handle().clone();
+                let forward: ingress::Forward = Arc::new(move |body| {
+                    handle
+                        .try_state::<AppState>()
+                        .map(|state| ingress::forward_to(&state.services, body))
+                        .unwrap_or_default()
+                });
+                let approved = app
+                    .try_state::<plugins::Approvals>()
+                    .map(|approvals| approvals.read())
+                    .unwrap_or_default();
+                match plugin_host::PluginHost::start(
+                    &plugins_dir,
+                    approved,
+                    plugin_secrets,
+                    forward,
+                ) {
+                    Ok(host) => {
+                        state
+                            .services
+                            .set_plugin_hooks(service::PluginHooks::for_host(&host));
+                        app.manage(host);
+                    }
+                    Err(error) => eprintln!("{error}"),
+                }
+            }
             let sessions = state.sessions.sender();
             let runner = AppRunner {
                 app: app.handle().clone(),
@@ -2193,6 +2425,18 @@ pub fn run() {
             delete_profile,
             import_mhz_profile,
             create_pack_profile,
+            list_folder_packs,
+            open_packs_folder,
+            list_plugins,
+            open_plugins_folder,
+            enable_plugin,
+            disable_plugin,
+            set_plugin_secret,
+            forget_plugin_secret,
+            choose_plugin_folder,
+            review_plugin_install,
+            install_plugin,
+            remove_plugin,
             import_profile,
             allow_imported_profile_execution,
             mark_all_profiles_for_review,
@@ -2285,6 +2529,10 @@ pub fn run() {
             state.sessions.shutdown(Duration::from_millis(500));
             // Bounded: SIGINT, up to STOP_GRACE, then SIGKILL; never joins.
             state.services.stop_all(service::STOP_GRACE);
+            #[cfg(unix)]
+            if let Some(host) = app.try_state::<plugin_host::PluginHost>() {
+                host.stop_all();
+            }
             state.feeds.stop_all();
             state.inventory.stop();
             #[cfg(unix)]
@@ -2994,6 +3242,60 @@ mod tests {
         let reimported = save(&state, None, &edited, None).unwrap();
         assert!(flagged(&state, &reimported.id));
         assert_eq!(state.execution_block(None, None, &edited), refused());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_export_that_drops_a_legacy_secret_keeps_the_dry_run_flag() {
+        let (directory, state, imported) = imported_state();
+        let app_data = directory.path().join("app");
+        let folder = plugins::dir(&app_data).join("com.example.lights");
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(
+            folder.join(plugins::MANIFEST_FILE),
+            serde_json::json!({
+                "schema": 1, "id": "com.example.lights", "name": "Lights", "version": "1.0.0",
+                "command": ["bin/lights"],
+                "actions": [{ "id": "login", "label": "Log in", "params": [
+                    { "id": "token", "label": "Token", "type": "text", "secret": true }
+                ] }]
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let mut legacy = imported.profile.clone();
+        legacy.bindings[0].action = serde_json::from_value(serde_json::json!({
+            "type": "plugin", "plugin": "com.example.lights", "min_version": "1.0.0",
+            "action": "login", "params": { "token": "old" }
+        }))
+        .unwrap();
+        // Flagged by its content only, as an imported file that was never saved would be.
+        let given = import_flags::content_hash(&legacy);
+        state
+            .with_store(|store| {
+                state.imports.update(&saved_hashes(store)?, |records| {
+                    records.flag_hash(&given, true);
+                    Ok(())
+                })
+            })
+            .unwrap();
+        let result = state
+            .export_profile(ExportRequest {
+                profile: legacy.clone(),
+                source_profile_id: None,
+            })
+            .unwrap();
+        assert_eq!(result.dropped_secrets, ["Token (com.example.lights)"]);
+        let mut stripped = legacy;
+        plugins::strip_secrets(&mut stripped, &app_data);
+        assert!(
+            state
+                .imports
+                .load()
+                .unwrap()
+                .flagged_hashes
+                .contains_key(&import_flags::content_hash(&stripped))
+        );
     }
 
     #[test]

@@ -77,6 +77,7 @@ export function ProfileTransfer({ session, state, disabled, mac }: { session: Pr
       <strong>{t('transfer.exported')}</strong>
       <code className="storage-path">{exportResult.path}</code>
       <p className="fine-print">{formatBytes(exportResult.bytes)} · {t('transfer.exportNote')}</p>
+      {exportResult.dropped_secrets?.length ? <p className="fine-print" role="note">{t('transfer.secretsDropped', { secrets: exportResult.dropped_secrets.join(', ') })}</p> : null}
       <div className="diagnostics-actions"><button type="button" className="button" onClick={() => { void copyText(exportResult.path, typeof navigator === 'undefined' ? undefined : navigator.clipboard).then(setCopy); }}>{copy === 'Path copied.' ? <Check size={16} /> : <Copy size={16} />}{t('transfer.copyPath')}</button>{copy && <span className="fine-print">{copy === copyFallback ? t('transfer.copyFailed') : t('transfer.copied')}</span>}</div>
     </div>}
   </div>;

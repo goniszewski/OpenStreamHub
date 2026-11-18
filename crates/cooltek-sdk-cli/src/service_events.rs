@@ -7,13 +7,15 @@
 
 use crate::{capture::encode_hex, live_runtime::LiveSummary};
 use cooltek_sdk_service::{
-    Action, ActionDispatcher, Binding, Confirmation, DeviceContext, InputEvent, InputSession,
-    InputUpdate, ProfileResolution, ProfileSession, RunningTimer, ServiceModule, ServiceState,
-    TimerAlert, TimerKey, TimerTable, TimerToggle, Variable,
+    Action, ActionDispatcher, Binding, Condition, Confirmation, DeviceContext, InputEvent,
+    InputSession, InputUpdate, PluginInput, PluginValue, ProfileResolution, ProfileSession,
+    RunningTimer, ServiceModule, ServiceState, TimerAlert, TimerKey, TimerTable, TimerToggle,
+    Variable,
 };
 use serde::Serialize;
 use serde_json::{Value, json};
 use std::{
+    collections::BTreeMap,
     io::Write,
     sync::atomic::{AtomicBool, Ordering},
 };
@@ -72,6 +74,9 @@ pub struct PlannedEvent {
     pub dial_function: Option<ActiveDialFunction>,
     /// Input events represented, greater than one only after live coalescing.
     pub coalesced: u64,
+    /// The plugin actions that hear this unbound input as a plugin event
+    /// ([`ProfileSession::plugin_event_targets`]); empty for any other outcome.
+    pub plugin_events: Vec<Action>,
 }
 
 impl PlannedEvent {
@@ -117,6 +122,11 @@ pub struct Work {
     /// The variables the profile declared when this work was planned, so the dispatcher can start new ones and keep
     /// the rest across a profile swap.
     pub variables: Vec<Variable>,
+    /// The [`ProfileSession::id`] of the profile that planned this work, so an action that must not outlive its
+    /// profile can tell it was swapped out meanwhile (0 when unknown, or when coalescing mixed two profiles).
+    pub profile: u64,
+    /// The module whose input this is, which a plugin hears with each input.
+    pub module: ServiceModule,
 }
 
 /// Decodes one report and resolves its events without hardware or host I/O.
@@ -139,7 +149,12 @@ pub fn plan_report(
         .map(|event| {
             let binding = session.binding_for(device, &event).cloned();
             let current = active_dial_function(session, device);
+            // Before routing, which moves held keys and the dial function on.
+            let mut plugin_events = session.plugin_event_targets(device, &event);
             let resolution = session.route(device, &event)?;
+            if !matches!(resolution, ProfileResolution::Unbound) {
+                plugin_events.clear();
+            }
             let dial_function = match resolution {
                 ProfileResolution::DialFunction { .. } => None,
                 _ => current,
@@ -150,6 +165,7 @@ pub fn plan_report(
                 resolution,
                 dial_function,
                 coalesced: 1,
+                plugin_events,
             })
         })
         .collect::<Result<Vec<_>, String>>()?;
@@ -165,6 +181,8 @@ pub fn plan_report(
         dropped_dial_function_count: 0,
         merge_barrier: false,
         variables: session.profile().variables.clone(),
+        profile: session.id(),
+        module: device.module,
     })
 }
 
@@ -345,6 +363,20 @@ pub fn process_work<D: ActionDispatcher, W: Write>(
         if abort.load(Ordering::SeqCst) {
             break;
         }
+        let input = PluginInput::new(work.module, &planned.event);
+        if !planned.plugin_events.is_empty() {
+            // Written in input order with the invokes, never logged, and never waited for.
+            dispatcher.set_service_state(ServiceState {
+                timer_running: !timers.is_empty(),
+                variables: work.variables.clone(),
+                profile: work.profile,
+                input: Some(input),
+            });
+            for action in &planned.plugin_events {
+                dispatcher.plugin_event(action, &input);
+            }
+            continue;
+        }
         let ProfileResolution::Action { action, .. } = &planned.resolution else {
             continue;
         };
@@ -412,6 +444,8 @@ pub fn process_work<D: ActionDispatcher, W: Write>(
         dispatcher.set_service_state(ServiceState {
             timer_running: !timers.is_empty(),
             variables: work.variables.clone(),
+            profile: work.profile,
+            input: Some(input),
         });
         let executed = match dispatcher.dispatch_with_execution(action, execute) {
             Ok(executed) => executed,
@@ -440,8 +474,53 @@ pub fn process_work<D: ActionDispatcher, W: Write>(
     Ok(())
 }
 
+/// A plugin's parameters for the activity log: text by its length only, since the service cannot tell which ones the
+/// manifest marks secret; numbers and bools as they are.
+fn loggable_plugin_params(params: &BTreeMap<String, PluginValue>) -> Value {
+    params
+        .iter()
+        .map(|(name, value)| {
+            let logged = match value {
+                PluginValue::Text(text) => json!({"chars": text.chars().count()}),
+                other => json!(other),
+            };
+            (name.clone(), logged)
+        })
+        .collect::<serde_json::Map<String, Value>>()
+        .into()
+}
+
+/// A condition for the activity log: as written, except a plugin condition's text parameters, which are logged like a
+/// plugin action's.
+fn loggable_condition(condition: &Condition) -> Value {
+    match condition {
+        Condition::Plugin {
+            plugin,
+            min_version,
+            condition,
+            params,
+            variables,
+            value,
+        } => {
+            let mut logged = json!({"plugin":plugin, "min_version":min_version, "condition":condition,
+                "params":loggable_plugin_params(params), "value":value});
+            if !variables.is_empty() {
+                logged["variables"] = json!(variables);
+            }
+            json!({"plugin": logged})
+        }
+        Condition::All(items) => {
+            json!({"all": items.iter().map(loggable_condition).collect::<Vec<_>>()})
+        }
+        Condition::Any(items) => {
+            json!({"any": items.iter().map(loggable_condition).collect::<Vec<_>>()})
+        }
+        other => json!(other),
+    }
+}
+
 /// Redacts an action for a log record: snippet text and URL paths, queries and
-/// user information (often passwords or tokens), terminal command lines, timer labels and OBS scene
+/// user information (often passwords or tokens), terminal command lines, program paths and arguments, timer labels and OBS scene
 /// names are never written. Every other action serializes unchanged.
 pub fn loggable(action: &Action) -> Value {
     match action {
@@ -462,6 +541,39 @@ pub fn loggable(action: &Action) -> Value {
             }
             value
         }
+        // The path can name the user and arguments can carry tokens: only the
+        // lengths and the argument count are logged.
+        Action::RunProgram {
+            program,
+            args,
+            directory,
+            variables,
+        } => {
+            let mut value = json!({"type":"run_program", "program_chars":program.chars().count(), "args":args.len()});
+            if let Some(directory) = directory {
+                value["directory_chars"] = json!(directory.chars().count());
+            }
+            if *variables {
+                value["variables"] = json!(true);
+            }
+            value
+        }
+        // Text parameters can carry tokens or names, and the service does not
+        // know which ones the manifest marks secret: only their lengths are
+        // logged. Numbers, bools and the ids are closed values.
+        Action::Plugin {
+            plugin,
+            min_version,
+            action,
+            params,
+            variables,
+        } => {
+            let mut value = json!({"type":"plugin", "plugin":plugin, "min_version":min_version, "action":action, "params":loggable_plugin_params(params)});
+            if !variables.is_empty() {
+                value["variables"] = json!(variables);
+            }
+            value
+        }
         Action::MultiAction { actions } => {
             json!({"type":"multi_action", "actions":actions.iter().map(loggable).collect::<Vec<_>>()})
         }
@@ -472,7 +584,7 @@ pub fn loggable(action: &Action) -> Value {
             otherwise,
         } => json!({
             "type":"conditional",
-            "when":when,
+            "when":loggable_condition(when),
             "then":then.iter().map(loggable).collect::<Vec<_>>(),
             "else":otherwise.iter().map(loggable).collect::<Vec<_>>(),
         }),
@@ -765,6 +877,7 @@ mod tests {
                 },
                 dial_function: None,
                 coalesced: 1,
+                plugin_events: Vec::new(),
             }],
             report_count: 1,
             coalesced_parse_error_count: 0,
@@ -772,6 +885,8 @@ mod tests {
             dropped_dial_function_count: 0,
             merge_barrier: false,
             variables: Vec::new(),
+            profile: 0,
+            module: ServiceModule::M4315,
         }
     }
 
@@ -781,6 +896,36 @@ mod tests {
             .filter(|line| !line.is_empty())
             .map(|line| serde_json::from_slice(line).unwrap())
             .collect()
+    }
+
+    #[test]
+    fn a_plugin_condition_is_logged_like_a_plugin_action() {
+        let action: Action = serde_json::from_value(json!({
+            "type": "conditional",
+            "when": {"any": [
+                {"output_muted": true},
+                {"plugin": {"plugin": "com.example.lights", "min_version": "1.2.0", "condition": "is_on",
+                    "params": {"token": "s3cr3t", "entity": "light.{{room}}", "level": 40, "fade": true},
+                    "variables": ["entity"], "value": false}},
+                {"plugin": {"plugin": "com.example.lights", "min_version": "1.2.0", "condition": "ready",
+                    "value": true}}
+            ]},
+            "then": [{"type": "toggle_mute"}]
+        }))
+        .unwrap();
+        let logged = loggable(&action);
+        assert_eq!(
+            logged["when"],
+            json!({"any": [
+                {"output_muted": true},
+                {"plugin": {"plugin": "com.example.lights", "min_version": "1.2.0", "condition": "is_on",
+                    "params": {"token": {"chars": 6}, "entity": {"chars": 14}, "level": 40, "fade": true},
+                    "variables": ["entity"], "value": false}},
+                {"plugin": {"plugin": "com.example.lights", "min_version": "1.2.0", "condition": "ready",
+                    "params": {}, "value": true}}
+            ]})
+        );
+        assert!(!logged.to_string().contains("s3cr3t"), "{logged}");
     }
 
     #[test]
@@ -1516,6 +1661,36 @@ mod tests {
             loggable(&bare),
             json!({"type":"terminal_command", "app":"iterm2", "command_chars":5})
         );
+        let plugin: Action = serde_json::from_value(json!({
+            "type":"plugin", "plugin":"com.example.lights", "min_version":"1.0.0", "action":"set",
+            "params":{"token":"s3cr3t", "level":40, "fade":true, "room":"{{room}}"}, "variables":["room"],
+        }))
+        .unwrap();
+        assert_eq!(
+            loggable(&plugin),
+            json!({"type":"plugin", "plugin":"com.example.lights", "min_version":"1.0.0", "action":"set",
+                "params":{"token":{"chars":6}, "level":40, "fade":true, "room":{"chars":8}}, "variables":["room"]})
+        );
+        let program = Action::RunProgram {
+            program: "~/bin/deploy".into(),
+            args: vec!["--token".into(), "s3cr3t".into()],
+            directory: Some("/tmp".into()),
+            variables: false,
+        };
+        assert_eq!(
+            loggable(&program),
+            json!({"type":"run_program", "program_chars":12, "args":2, "directory_chars":4})
+        );
+        let filled = Action::RunProgram {
+            program: "/a".into(),
+            args: vec!["{{token}}".into()],
+            directory: None,
+            variables: true,
+        };
+        assert_eq!(
+            loggable(&filled),
+            json!({"type":"run_program", "program_chars":2, "args":1, "variables":true})
+        );
         let nested = Action::MultiAction {
             actions: vec![text.clone(), Action::ToggleMute, url],
         };
@@ -1740,5 +1915,90 @@ mod tests {
         assert!(timers.is_empty());
         run(press(0, 5, Action::ToggleMute), &mut timers);
         assert_eq!(seen.0, [false, true, false]);
+    }
+
+    /// Records plugin invokes and events in the order they reach the host.
+    #[derive(Default)]
+    struct PluginHost {
+        input: Option<PluginInput>,
+        seen: Vec<String>,
+    }
+
+    impl ActionDispatcher for PluginHost {
+        fn set_service_state(&mut self, state: ServiceState) {
+            self.input = state.input;
+        }
+        fn dispatch(&mut self, action: &Action) -> Result<(), String> {
+            let input = self.input.expect("an action is handed its input");
+            self.seen.push(format!(
+                "{} {:?} {}",
+                action.type_name(),
+                input.gesture,
+                input.control
+            ));
+            Ok(())
+        }
+        fn plugin_event(&mut self, action: &Action, input: &PluginInput) {
+            assert_eq!(self.input.as_ref(), Some(input));
+            let Action::Plugin { action, .. } = action else {
+                panic!("only a plugin action hears events");
+            };
+            self.seen.push(format!(
+                "event {action} {:?} {} {:?}",
+                input.gesture, input.control, input.module
+            ));
+        }
+    }
+
+    #[test]
+    fn a_held_key_invokes_on_press_and_sends_its_release_as_an_event_in_order() {
+        let mut slots = vec![Value::Null; 15];
+        slots[2] = json!({"type": "action", "label": "Talk", "bindings": [{"gesture": "pressed",
+            "action": {"type": "plugin", "plugin": "com.x.talk", "min_version": "1.0.0", "action": "talk"}}]});
+        let profile = json!({"schema_version": 2, "name": "Talk", "bindings": [],
+            "keypad": {"pages": [{"id": "root", "name": "Keys", "slots": slots}]}});
+        let mut session = ProfileSession::new(
+            cooltek_sdk_service::Profile::from_json(profile.to_string().as_bytes()).unwrap(),
+        )
+        .unwrap();
+        let device = DeviceContext {
+            module: ServiceModule::M4315,
+            serial_number: None,
+        };
+        let mut input = InputSession::new(ServiceModule::M4315);
+        let keys = |held: bool| {
+            let mut raw = vec![1, 0x34, 17, 0, 2, 15];
+            raw.extend([0; 15]);
+            raw[6 + 2] = u8::from(held);
+            raw
+        };
+        let mut host = PluginHost::default();
+        let mut output = Vec::new();
+        let mut timers = TimerTable::default();
+        let mut summary = LiveSummary::default();
+        for (time, held) in [(1, true), (2, false)] {
+            let work = plan_report(&mut input, &mut session, &device, &keys(held), time).unwrap();
+            process_work(
+                work,
+                &mut host,
+                &mut output,
+                &AtomicBool::new(false),
+                true,
+                false,
+                false,
+                &mut timers,
+                time,
+                &mut summary,
+            )
+            .unwrap();
+        }
+        assert_eq!(
+            host.seen,
+            ["plugin Pressed 2", "event talk Released 2 M4315"]
+        );
+        // The event is not an action: nothing about it is logged.
+        let log = String::from_utf8(output).unwrap();
+        assert!(!log.contains("plugin_event"));
+        assert_eq!(summary.action_count, 1);
     }
 }

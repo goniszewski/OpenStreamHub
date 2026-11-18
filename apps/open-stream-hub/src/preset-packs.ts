@@ -117,6 +117,38 @@ export function loadPacks(files: Record<string, unknown>): { packs: PresetPack[]
   return { packs, rejected };
 }
 
+// What `list_folder_packs` returns for `<app data>/packs/`: each `*.json` file's text, or why it could not be read, and
+// how many files past the limit were not read.
+export interface FolderPackFile { file: string; text?: string; error?: string }
+export interface FolderListing { path: string; files: FolderPackFile[]; skipped: number; truncated?: boolean }
+export interface FolderPacks { path: string; packs: PresetPack[]; rejected: RejectedPack[]; skipped: number; truncated: boolean }
+
+// A name as a reader sees it: compatibility forms folded, invisible format characters (zero-width spaces and the like)
+// dropped, outer spaces trimmed and case ignored, so "Zoom\u200B" or a full-width "Ｚoom" is the same name as "Zoom".
+const nameKey = (name: string) => name.normalize('NFKC').replace(/\p{Cf}/gu, '').trim().toLowerCase();
+
+// The packs a user put in the packs folder, checked by the same rules as the shipped ones. A shipped pack keeps its id
+// and its name: a folder pack that reuses either (names compared by `nameKey`) is refused, so a dropped file cannot take
+// a built-in preset's name. The chooser also marks every folder pack as such and never shows one as checked on a Mac
+// (its `verified` is the author's word only). Between folder files the first by file name wins, for ids and names.
+export function loadFolderPacks(listing: FolderListing, shipped: PresetPack[]): FolderPacks {
+  const packs: PresetPack[] = [];
+  const rejected: RejectedPack[] = [];
+  for (const entry of listing.files) {
+    if (typeof entry.text !== 'string') { rejected.push({ file: entry.file, issues: [`The file could not be read: ${entry.error ?? 'unknown reason'}.`] }); continue; }
+    const { pack, issues } = parsePack(entry.text);
+    const sameName = (other: PresetPack) => pack !== null && nameKey(other.name) === nameKey(pack.name);
+    if (pack && shipped.some(other => other.id === pack.id)) issues.push(`The id "${pack.id}" is already used by a preset that comes with the app.`);
+    else if (pack && shipped.some(sameName)) issues.push(`The name "${pack.name}" is already used by a preset that comes with the app.`);
+    else if (pack && packs.some(other => other.id === pack.id)) issues.push(`The id "${pack.id}" is already used by another pack.`);
+    else if (pack && packs.some(sameName)) issues.push(`The name "${pack.name}" is already used by another pack.`);
+    if (issues.length || !pack) rejected.push({ file: entry.file, issues });
+    else packs.push(pack);
+  }
+  packs.sort((a, b) => a.name.localeCompare(b.name));
+  return { path: listing.path, packs, rejected, skipped: listing.skipped, truncated: listing.truncated === true };
+}
+
 // The packs shipped in `presets/`, read at build time.
 export const bundledPacks = loadPacks(import.meta.glob('../presets/*.json', { eager: true, import: 'default' }));
 

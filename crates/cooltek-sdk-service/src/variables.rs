@@ -14,6 +14,9 @@ struct State {
     /// In declaration order.
     values: Vec<(String, VariableValue)>,
     version: u64,
+    /// The [`crate::ProfileSession::id`] of the profile last handed over by
+    /// [`SharedVariables::swap`], when a swap has happened.
+    profile: Option<u64>,
 }
 
 impl SharedVariables {
@@ -47,6 +50,38 @@ impl SharedVariables {
             state.values = kept;
             state.version += 1;
         }
+    }
+
+    /// Declares the variables of a profile swapped in while the run goes on (see
+    /// [`SharedVariables::declare`]) and records its session id, so a press
+    /// planned by the profile before can be told apart
+    /// ([`SharedVariables::swapped_away_from`]).
+    pub fn swap(&self, declared: &[Variable], profile: u64) {
+        self.declare(declared);
+        self.lock().profile = Some(profile);
+    }
+
+    /// Whether another profile than `profile` (a [`crate::ProfileSession::id`])
+    /// was swapped in after it, so work it planned is from a profile no
+    /// longer running. False until the first swap.
+    pub fn swapped_away_from(&self, profile: u64) -> bool {
+        self.lock()
+            .profile
+            .is_some_and(|current| current != profile)
+    }
+
+    /// Runs `read` with a lookup of the current values under one lock, so
+    /// every value it reads is from the same moment and only those it asks
+    /// for are copied.
+    pub fn read<R>(&self, read: impl FnOnce(&dyn Fn(&str) -> Option<VariableValue>) -> R) -> R {
+        let state = self.lock();
+        read(&|name: &str| {
+            state
+                .values
+                .iter()
+                .find(|(declared, _)| declared == name)
+                .map(|(_, value)| value.clone())
+        })
     }
 
     /// Applies `change` to the value of `name`; the version moves only when the value does.

@@ -2,7 +2,7 @@ import { groupItems, groupMode, isGroup } from './flow-model';
 import { english } from './i18n-react';
 import type { Action, BindingAction, Condition, LeafCondition, PluginCondition, PluginValue, Variable, VariableValue, FaderTemplate, MacroStep, MediaCommand, MediaKey, ObsNameList, ObsMediaOp, ObsMuteOp, ObsOutputOp, ObsRecordOp, ObsReplayBufferOp, ObsSwitchOp, ProfileDirection, StepAction, StreamlabsAudioOp, StreamlabsVisibilityOp, SystemCommand, TerminalApp, TimerSound } from './contracts';
 
-// Mirrors NAMED_KEYS in crates/cooltek-sdk-service/src/profile.rs. The Rust
+// Mirrors KEY_NAMES in crates/cooltek-sdk-service/src/profile.rs. The Rust
 // service holds the authoritative allow-list and rejects anything else; the
 // shared fixture test keeps both tables identical, in order.
 export const namedKeys: ReadonlyArray<readonly [string, string]> = [

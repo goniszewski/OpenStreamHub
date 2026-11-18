@@ -36,14 +36,14 @@ pub use keypad::{
     KeyFace, KeypadBinding, KeypadLayout, KeypadNavigation, KeypadPage, KeypadResolution,
     KeypadTile, ProfileResolution, ProfileSession,
 };
-pub use macos::{MacOsDispatcher, kill_running_programs};
+pub use macos::{MacOsDispatcher, key_for_virtual_code, kill_running_programs, virtual_key_code};
 pub use plugin::{PluginBridge, PluginInput, PluginKey, PluginUse, PluginUseKind, PluginValue};
 pub use profile::{
     Action, Binding, Condition, Gesture, MacroStep, MediaCommand, Modifier, ObsConfirm, ObsMediaOp,
     ObsMuteOp, ObsOutputOp, ObsRecordOp, ObsReplayBufferOp, ObsSwitchOp, Profile, ProfileDirection,
     ScreenBrightness, ServiceModule, StreamlabsAudioOp, StreamlabsVisibilityOp, SystemCommand,
     TerminalApp, TimerSound, Variable, VariableKind, VariableValue, is_invisible_text_character,
-    key_for_virtual_code, validate_variable_name, variable_references, virtual_key_code,
+    validate_variable_name, variable_references,
 };
 pub use timer::{
     Confirmation, RunningTimer, TimerAlert, TimerKey, TimerTable, TimerToggle, format_duration,

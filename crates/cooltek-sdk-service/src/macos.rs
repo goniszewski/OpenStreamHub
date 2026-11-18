@@ -4,6 +4,8 @@
 //! `open`, the pasteboard tools, `screencapture` and `afplay`;
 //! [`MacOsDispatcher`] is the shared [`HostDispatcher`] over it.
 
+mod keys;
+
 pub use crate::host::AudioSnapshot;
 pub use crate::host::process::kill_running_programs;
 use crate::{
@@ -16,6 +18,7 @@ use crate::{
         },
     },
 };
+pub use keys::{key_for_virtual_code, virtual_key_code};
 use std::{
     sync::{Arc, atomic::AtomicBool},
     time::Duration,
@@ -334,7 +337,7 @@ fn macro_payload(steps: &[MacroStep]) -> Result<Vec<u8>, String> {
         .iter()
         .enumerate()
         .map(|(index, step)| {
-            let code = crate::profile::virtual_key_code(&step.key).ok_or_else(|| {
+            let code = keys::virtual_key_code(&step.key).ok_or_else(|| {
                 format!("macro step {}: the key has no virtual key code", index + 1)
             })?;
             Ok(serde_json::json!({
@@ -459,7 +462,7 @@ fn volume_step_script(delta: i16) -> String {
 /// ASCII alphanumeric character or space and cannot introduce AppleScript
 /// syntax; a named key is sent as an integer from the closed key-code table.
 fn keystroke_script(key: &str, modifiers: &[Modifier]) -> String {
-    let mut script = match crate::profile::named_key_code(key) {
+    let mut script = match keys::named_key_code(key) {
         Some(code) => format!("tell application \"System Events\" to key code {code}"),
         None => {
             debug_assert!(

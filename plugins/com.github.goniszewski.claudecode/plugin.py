@@ -481,7 +481,7 @@ class Plugin:
         self.waiting = {}  # set_image id -> (key id, signature)
         self.pins = {}  # control -> (session id, until)
         self.seen = set()  # (session id, at) of "done" sessions brought to the front from a key
-        self.gone = {}  # session id -> (at, looks in a row without its prompt on screen)
+        self.gone = {}  # session id -> (at, looks in a row without its prompt on screen[, "declined"])
         self.front_since = {}  # session id -> when its terminal was first seen in front, in this stretch
         self.on_key = {}  # control -> (session id, state) its picture shows, and since when
         self.prompt_seen = {}  # session id -> (its prompt's last lines, when first seen)
@@ -783,10 +783,10 @@ class Plugin:
             self.note_front(session, look.front)
             self.note_prompt(session, look.seen)
             with self.lock:
-                at, count = self.gone.get(session.id, (session.at, 0))
-                if at != session.at:
-                    count = 0
-                self.gone[session.id] = (session.at, 0 if look.prompt else count + 1)
+                at, count, *declined = self.gone.get(session.id, (session.at, 0))
+                if at != session.at or look.prompt:
+                    count, declined = 0, []  # a new turn, or the prompt is back on screen
+                self.gone[session.id] = (session.at, count + (not look.prompt), *declined)
 
     def poll_once(self):
         with self.lock:

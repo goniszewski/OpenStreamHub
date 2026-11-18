@@ -447,6 +447,18 @@ class PluginTests(unittest.TestCase):
         self.assertEqual(self.terminals.calls, [("look", "a"), ("escape", "a", "TEXT")])
         self.assertEqual(self.plugin.sessions()[0].state, "idle", "Claude Code stops its turn when declined")
 
+    def test_the_keys_keep_updating_after_a_prompt_is_answered_from_a_key(self):
+        for long, state in ((False, "working"), (True, "idle")):
+            with self.subTest(long=long):
+                self.setUp()
+                self.in_front_for_a_while("yes" if not long else "other")
+                self.press(long=long)
+                self.terminals.looked = look(True, None)  # the prompt has left the screen
+                for _ in range(3):
+                    self.plugin.poll_once()
+                    self.assertEqual(self.plugin.sessions()[0].state, state)
+                self.assertFalse(any("could not" in line for line in self.logs()))
+
     def test_a_question_is_never_answered_from_a_key(self):
         for detail in ("question", "AskUserQuestion", "ExitPlanMode"):
             self.store.list = [session("a", "waiting", at=5, detail=detail)]

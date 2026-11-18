@@ -490,6 +490,18 @@ pub type PluginUsage = Arc<dyn Fn(&str, Option<BTreeSet<String>>) + Send + Sync>
 pub type PluginInvoke = Arc<dyn Fn(&str, &Value, crate::plugin_host::Reply) + Send + Sync>;
 /// Carries one `plugin_event` record of the run `service_id` to its plugin; nothing comes back.
 pub type PluginEvent = Arc<dyn Fn(&str, &Value) + Send + Sync>;
+/// Carries one `plugin_key` record of the run `service_id` (a key shown or hidden) to its plugin, with the run's
+/// number ([`next_run`]) and the way to send the run that plugin's images; nothing comes back.
+pub type PluginKey = Arc<dyn Fn(&str, u64, &Value, crate::plugin_host::RunControl) + Send + Sync>;
+/// Says the run `service_id` with that number ended (its process is gone), so its keys are forgotten.
+pub type PluginRunEnded = Arc<dyn Fn(&str, u64) + Send + Sync>;
+
+/// A number for a new run, growing with each, so a late record of an ended run is told from one of a later run that
+/// reuses its service id.
+fn next_run() -> u64 {
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    NEXT.fetch_add(1, Ordering::SeqCst)
+}
 
 /// How module runs reach the plugin host (`plugin_host.rs`), set once the host is up.
 #[derive(Clone)]
@@ -497,17 +509,24 @@ pub struct PluginHooks {
     pub usage: PluginUsage,
     pub invoke: PluginInvoke,
     pub event: PluginEvent,
+    pub key: PluginKey,
+    pub ended: PluginRunEnded,
 }
 
 impl PluginHooks {
     pub fn for_host(host: &crate::plugin_host::PluginHost) -> Self {
         let (usage, invoke, event) = (host.clone(), host.clone(), host.clone());
+        let (key, ended) = (host.clone(), host.clone());
         Self {
             usage: Arc::new(move |service_id, plugins| usage.set_usage(service_id, plugins)),
             invoke: Arc::new(move |service_id, record, reply| {
                 invoke.invoke(service_id, record, reply)
             }),
             event: Arc::new(move |service_id, record| event.event(service_id, record)),
+            key: Arc::new(move |service_id, run, record, control| {
+                key.key(service_id, run, record, control)
+            }),
+            ended: Arc::new(move |service_id, run| ended.run_ended(service_id, run)),
         }
     }
 }
@@ -1020,6 +1039,7 @@ impl Services {
             plugins: self.plugins.get().cloned(),
             run_plugins: Arc::clone(&run_plugins),
             service_id: service_id.clone(),
+            run: next_run(),
             execute: Arc::clone(&execute_now),
             child: Arc::clone(&child),
             done: Arc::clone(&done),
@@ -1146,6 +1166,8 @@ struct Supervisor {
     /// The run's plugin record, shared with its handle; its end is reported under this lock.
     run_plugins: Arc<Mutex<RunPlugins>>,
     service_id: String,
+    /// This run's number ([`next_run`]).
+    run: u64,
     execute: Arc<AtomicBool>,
     child: Arc<Mutex<Child>>,
     done: Arc<AtomicBool>,
@@ -1169,6 +1191,7 @@ impl Supervisor {
         let (drained_tx, drained_rx) = mpsc::channel::<()>();
         let mut readers = 0;
         if let Some(stdout) = stdout {
+            let run = self.run;
             let (id, emit, closed, drained, control, plugins) = (
                 self.service_id.clone(),
                 Arc::clone(&self.emit),
@@ -1180,7 +1203,15 @@ impl Supervisor {
             let spawned = thread::Builder::new()
                 .name(format!("stdout {}", self.service_id))
                 .spawn(move || {
-                    relay_records(&id, stdout, &closed, &control, plugins.as_ref(), &*emit);
+                    relay_records(
+                        &id,
+                        run,
+                        stdout,
+                        &closed,
+                        &control,
+                        plugins.as_ref(),
+                        &*emit,
+                    );
                     let _ = drained.send(());
                 });
             readers += usize::from(spawned.is_ok());
@@ -1219,6 +1250,10 @@ impl Supervisor {
             }
         }
         closed.store(true, Ordering::SeqCst);
+        // After the records are drained, so no late `plugin_key` brings a key of this run back.
+        if let Some(plugins) = &self.plugins {
+            (plugins.ended)(&self.service_id, self.run);
+        }
         drop(profile);
         let stderr_tail =
             String::from_utf8_lossy(&tail.lock().unwrap_or_else(|poisoned| poisoned.into_inner()))
@@ -1254,6 +1289,7 @@ impl Supervisor {
 
 fn relay_records(
     service_id: &str,
+    run: u64,
     stdout: impl Read,
     closed: &AtomicBool,
     control: &Arc<ControlPipe>,
@@ -1276,6 +1312,20 @@ fn relay_records(
             if record.record.get("type").and_then(Value::as_str) == Some("plugin_event") {
                 if let Some(plugins) = plugins {
                     (plugins.event)(service_id, &record.record);
+                }
+                continue;
+            }
+            // A key of a plugin action shown or hidden: not a log record, and nothing comes back. The plugin's images
+            // for it go back on the run's control channel.
+            if record.record.get("type").and_then(Value::as_str) == Some("plugin_key") {
+                if let Some(plugins) = plugins {
+                    let control = Arc::clone(control);
+                    (plugins.key)(
+                        service_id,
+                        run,
+                        &record.record,
+                        Arc::new(move |body| control.request(body, CONTROL_TIMEOUT).map(drop)),
+                    );
                 }
                 continue;
             }
@@ -1558,6 +1608,8 @@ mod tests {
         let seen = Arc::clone(&invoked);
         let heard = Arc::new(Mutex::new(Vec::new()));
         let events = Arc::clone(&heard);
+        let keys = Arc::new(Mutex::new(Vec::new()));
+        let shown = Arc::clone(&keys);
         let hooks = PluginHooks {
             usage: Arc::new(|_, _| {}),
             invoke: Arc::new(move |_service, record, _reply| {
@@ -1569,6 +1621,19 @@ mod tests {
                     .unwrap()
                     .push((service.to_string(), record.clone()))
             }),
+            key: Arc::new(move |service, run, record, control| {
+                assert_eq!(run, 7);
+                shown
+                    .lock()
+                    .unwrap()
+                    .push((service.to_string(), record.clone()));
+                // The control it carries reaches the run's control channel; this run has none.
+                assert_eq!(
+                    control(serde_json::json!({"type":"plugin_image_clear","plugin":"com.x.y"})),
+                    Err("the run on this module has ended".into())
+                );
+            }),
+            ended: Arc::new(|_, _| {}),
         };
         let emitted = Arc::new(Mutex::new(Vec::new()));
         let log = Arc::clone(&emitted);
@@ -1579,11 +1644,14 @@ mod tests {
             "\n",
             r#"{"type":"plugin_check","request":4,"plugin":"com.x.y","condition":"c","params":{}}"#,
             "\n",
+            r#"{"type":"plugin_key","state":"shown","page":"root","slot":3,"plugin":"com.x.y","action":"a","params":{}}"#,
+            "\n",
             r#"{"type":"action_executed"}"#,
             "\n",
         );
         relay_records(
             "service:41",
+            7,
             stdout.as_bytes(),
             &AtomicBool::new(false),
             &Arc::new(ControlPipe::new(None)),
@@ -1600,6 +1668,9 @@ mod tests {
         assert_eq!(invoked.lock().unwrap()[1]["request"], 4);
         assert_eq!(heard.lock().unwrap().len(), 1);
         assert_eq!(heard.lock().unwrap()[0].0, "service:41");
+        assert_eq!(keys.lock().unwrap().len(), 1);
+        assert_eq!(keys.lock().unwrap()[0].0, "service:41");
+        assert_eq!(keys.lock().unwrap()[0].1["slot"], 3);
         assert_eq!(
             *emitted.lock().unwrap(),
             [serde_json::json!({"type":"action_executed"})]
@@ -1999,12 +2070,16 @@ mod tests {
         let services = Services::default();
         let reports = Arc::new(Mutex::new(Vec::new()));
         let seen = Arc::clone(&reports);
+        let ended = Arc::new(Mutex::new(Vec::new()));
+        let ends = Arc::clone(&ended);
         services.set_plugin_hooks(PluginHooks {
             usage: Arc::new(move |id: &str, used| {
                 seen.lock().unwrap().push((id.to_string(), used))
             }),
             invoke: Arc::new(|_, _, _| {}),
             event: Arc::new(|_, _| {}),
+            key: Arc::new(|_, _, _, _| {}),
+            ended: Arc::new(move |id: &str, _run| ends.lock().unwrap().push(id.to_string())),
         });
         let (emit, _messages) = collector();
         let id = services
@@ -2021,7 +2096,9 @@ mod tests {
         // `start_service` attaches the plugins only after the start returns; the run is over by then.
         services.attach_plugins(&id, ["com.x.y".to_string()].into(), true);
         services.set_mode(&id, true).unwrap_err();
-        assert_eq!(*reports.lock().unwrap(), [(id, None)]);
+        assert_eq!(*reports.lock().unwrap(), [(id.clone(), None)]);
+        // Its end is reported once, so its plugin keys are forgotten.
+        assert_eq!(*ended.lock().unwrap(), [id]);
     }
 
     #[cfg(unix)]

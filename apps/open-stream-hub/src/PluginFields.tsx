@@ -1,10 +1,10 @@
 import { useEffect, useState } from 'react';
 import { FolderOpen, RotateCcw } from 'lucide-react';
-import type { PluginAction, PluginCondition, PluginValue, StepAction } from './contracts';
+import type { BindingAction, PluginAction, PluginCondition, PluginValue, StepAction } from './contracts';
 import { SelectField } from './controls';
 import { useT } from './i18n-react';
 import { pluginIssue } from './action-model';
-import { isSecretParam, pluginActionIssues, withPluginParam, pluginActionWith, pluginParamIssue, pluginSecretSet, resolvePluginAction, usablePlugins } from './plugins-model';
+import { isSecretParam, pluginActionIssues, pluginDrawsKey, withPluginParam, pluginActionWith, pluginParamIssue, pluginSecretSet, resolvePluginAction, usablePlugins } from './plugins-model';
 import type { PluginParam } from './plugins-model';
 import { usePlugins } from './plugins-context';
 import { useVariables } from './variables-context';
@@ -179,4 +179,18 @@ function PluginParamField({ id, param, value, issue, onChange }: {
         {param.variables && <p id={`${id}-note`} className="fine-print">{t('actions.plugin.variables')}</p>}
       </>;
   }
+}
+
+// The inspector's line on a key whose first binding runs a plugin action that draws its keys. The editor cannot know
+// what the plugin will draw, so the key shows its own face here, as it does in Test, before the plugin's first image
+// and after the plugin stops. With a binding for one device's serial, which binding a module runs depends on its
+// serial (an exact one hides a wildcard), so the line says the plugin may draw the key when any binding would.
+export function PluginKeyNote({ bindings }: { bindings: { serial_number?: string; action: BindingAction }[] }) {
+  const t = useT();
+  const { listing } = usePlugins();
+  if (bindings.some(binding => binding.serial_number)) {
+    return bindings.some(binding => pluginDrawsKey(listing, binding.action))
+      ? <p className="fine-print plugin-draws-key">{t('inspector.pluginMayDrawKey')}</p> : null;
+  }
+  return pluginDrawsKey(listing, bindings[0]?.action) ? <p className="fine-print plugin-draws-key">{t('inspector.pluginDrawsKey')}</p> : null;
 }

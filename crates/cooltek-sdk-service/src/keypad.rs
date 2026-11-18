@@ -40,6 +40,27 @@ pub enum KeypadTile {
     },
 }
 
+impl KeypadTile {
+    /// The plugin action that draws this tile on a keypad with `device`'s serial: the tile's first binding that
+    /// applies to that serial, in profile order, when it runs a plugin action directly. An exact serial's binding
+    /// hides a wildcard's for the same gesture, as when routing. A plugin action inside a `multi_action` or a
+    /// `conditional`, and a folder tile, draw nothing. Whether the manifest lets the action draw is the app's to check.
+    pub fn plugin_drawer(&self, device: &DeviceContext) -> Option<&Action> {
+        let KeypadTile::Action { bindings, .. } = self else {
+            return None;
+        };
+        let device = device.normalized().ok()?;
+        let bindings = bindings
+            .iter()
+            .map(|b| (b.gesture, b.serial_number.as_deref(), &b.action));
+        let serial = device.serial_number.as_deref();
+        let (_, _, action) = bindings
+            .clone()
+            .find(|binding| applies(bindings.clone(), serial, binding))?;
+        matches!(action, Action::Plugin { .. }).then_some(action)
+    }
+}
+
 /// A face an action tile shows while a variable condition holds.
 ///
 /// It replaces the tile's label and/or background (and any prepared artwork)
@@ -130,6 +151,22 @@ impl KeypadLayout {
     /// Returns a page by its exact identifier.
     pub fn page(&self, id: &str) -> Option<&KeypadPage> {
         self.pages.iter().find(|page| page.id == id)
+    }
+
+    /// The keys of page `page_id` a plugin draws on a keypad with `device`'s serial, in wire order, each with the
+    /// plugin action that draws it ([`KeypadTile::plugin_drawer`]). Empty for an unknown page.
+    pub fn plugin_keys(&self, page_id: &str, device: &DeviceContext) -> Vec<(u8, &Action)> {
+        let Some(page) = self.page(page_id) else {
+            return Vec::new();
+        };
+        page.slots
+            .iter()
+            .enumerate()
+            .filter_map(|(slot, tile)| {
+                let action = tile.as_ref()?.plugin_drawer(device)?;
+                Some((u8::try_from(slot).ok()?, action))
+            })
+            .collect()
     }
 
     /// Checks all shape, binding, tree, and depth constraints.
@@ -753,14 +790,10 @@ fn owning_plugin_actions<'a>(
     gesture: Gesture,
 ) -> Vec<Action> {
     let serial = device.serial_number.as_deref();
-    // The bindings that apply to this device: an exact serial's, or a wildcard's for a gesture without one.
-    let applies = |(bound, selector, _): &(Gesture, Option<&str>, &Action)| match selector {
-        Some(_) => *selector == serial,
-        None => !bindings.clone().any(|(other, other_serial, _)| {
-            other == *bound && other_serial.is_some() && other_serial == serial
-        }),
-    };
-    let applying: Vec<_> = bindings.clone().filter(applies).collect();
+    let applying: Vec<_> = bindings
+        .clone()
+        .filter(|binding| applies(bindings.clone(), serial, binding))
+        .collect();
     // The gesture runs a binding of its own, and no plugin hears it.
     if applying.iter().any(|(bound, ..)| *bound == gesture) {
         return Vec::new();
@@ -772,6 +805,21 @@ fn owning_plugin_actions<'a>(
         }
     }
     owners
+}
+
+/// Whether `binding` (gesture, serial, action), one of `bindings`, applies to a device with `serial`: an exact
+/// serial's, or a wildcard's for a gesture without one.
+fn applies<'a>(
+    mut bindings: impl Iterator<Item = (Gesture, Option<&'a str>, &'a Action)>,
+    serial: Option<&str>,
+    (bound, selector, _): &(Gesture, Option<&str>, &Action),
+) -> bool {
+    match selector {
+        Some(_) => *selector == serial,
+        None => !bindings.any(|(other, other_serial, _)| {
+            other == *bound && other_serial.is_some() && other_serial == serial
+        }),
+    }
 }
 
 fn select_action(
@@ -1376,6 +1424,64 @@ mod tests {
                 .plugin_event_targets(&other, &event(0, Gesture::Released))
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn a_tile_is_a_plugins_to_draw_by_its_first_binding_that_applies() {
+        let mut root: Vec<Value> = vec![Value::Null; 15];
+        // Key 0: a plugin action first: drawn by it.
+        root[0] = json!({"type": "action", "label": "Talk", "bindings": [
+            {"gesture": "released", "action": plugin("talk", "team")},
+            {"gesture": "pressed", "action": {"type": "toggle_mute"}}]});
+        // Key 1: an ordinary action first: no plugin draws it, though a later binding runs one.
+        root[1] = json!({"type": "action", "label": "Mute", "bindings": [
+            {"gesture": "pressed", "action": {"type": "toggle_mute"}},
+            {"gesture": "released", "action": plugin("talk", "late")}]});
+        // Key 2 and 3: plugin actions as steps draw nothing.
+        root[2] = json!({"type": "action", "label": "Several", "bindings": [{"gesture": "pressed",
+            "action": {"type": "multi_action", "actions": [plugin("talk", "team"), {"type": "toggle_mute"}]}}]});
+        root[3] = json!({"type": "action", "label": "If", "bindings": [{"gesture": "pressed",
+            "action": {"type": "conditional", "when": {"variable_is": {"name": "on", "value": true}},
+                "then": [plugin("talk", "then")], "else": [plugin("talk", "else")]}}]});
+        root[4] = json!({"type": "folder", "page_id": "more"});
+        // Key 5: a wildcard plugin press, hidden on the desk unit by its exact press, which runs another plugin
+        // action; another unit skips the desk's binding and is drawn by the wildcard.
+        root[5] = json!({"type": "action", "label": "Light", "bindings": [
+            {"gesture": "pressed", "serial_number": "desk", "action": plugin("light", "desk")},
+            {"gesture": "pressed", "action": plugin("light", "any")}]});
+        // Key 6: the desk's exact release comes first but applies only there; elsewhere the wildcard mute is first.
+        root[6] = json!({"type": "action", "label": "Desk", "bindings": [
+            {"gesture": "released", "serial_number": "desk", "action": plugin("light", "only")},
+            {"gesture": "pressed", "action": {"type": "toggle_mute"}}]});
+        let mut more: Vec<Value> = vec![Value::Null; 15];
+        more[2] = json!({"type": "action", "label": "Now", "bindings": [{"gesture": "pressed", "action": plugin("now", "a")}]});
+        let profile = json!({"schema_version": 2, "name": "Draw", "bindings": [],
+            "variables": [{"name": "on", "value": false}],
+            "keypad": {"pages": [{"id": "root", "name": "Keys", "slots": root},
+                {"id": "more", "name": "More", "slots": more}]}});
+        let profile = Profile::from_json(profile.to_string().as_bytes()).unwrap();
+        let layout = profile.keypad.as_ref().unwrap();
+        let keys = |page: &str, serial: Option<&str>| -> Vec<String> {
+            let device = DeviceContext {
+                module: ServiceModule::M4315,
+                serial_number: serial.map(str::to_owned),
+            };
+            layout
+                .plugin_keys(page, &device)
+                .into_iter()
+                .map(|(slot, action)| format!("{slot}={}", channels(vec![action.clone()])[0]))
+                .collect()
+        };
+        assert_eq!(keys("root", None), ["0=talk:team", "5=light:any"]);
+        assert_eq!(
+            keys("root", Some("desk")),
+            ["0=talk:team", "5=light:desk", "6=light:only"]
+        );
+        assert_eq!(keys("root", Some("other")), ["0=talk:team", "5=light:any"]);
+        // A blank serial is no serial.
+        assert_eq!(keys("root", Some(" ")), keys("root", None));
+        assert_eq!(keys("more", None), ["2=now:a"]);
+        assert!(keys("gone", None).is_empty());
     }
 
     #[test]

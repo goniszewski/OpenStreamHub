@@ -24,6 +24,7 @@ use cooltek_sdk_cli::{
     interrupt::WatchedStdin,
     live_output::TimedStdout,
     live_runtime::{LiveOptions, LiveSummary, run_live, run_live_with_display},
+    plugin_image::{PluginImageTable, PluginImages, PluginKeys},
     service_events::{
         TimerCancelReason, cancel_timers, dial_function_details, emit, end_record, inline_alert,
         plan_report, process_due_timers, process_work, start_record,
@@ -278,13 +279,20 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
             // faces can follow them.
             let variables = cooltek_sdk_service::SharedVariables::new();
             variables.declare(&profile.variables);
+            // The pictures plugins draw on keys, shared by the control channel and the display thread.
+            let plugin_images = PluginImageTable::default();
             let artwork = match (display_sync, dial_content) {
                 (false, _) => None,
                 (true, DialContent::Off) => {
-                    // Key faces sit inside the brightness and turn wrappers, so they are dimmed and turned too.
+                    // Key faces and plugin images sit inside the brightness and turn wrappers, so they are dimmed
+                    // and turned too. A face whose condition holds wins over a plugin's image, which wins over
+                    // the key's own artwork.
                     let faces = VariableFaces::prepare(
                         &profile,
-                        PreparedKeyArtwork::prepare_profile(&profile)?,
+                        PluginImages {
+                            inner: PreparedKeyArtwork::prepare_profile(&profile)?,
+                            table: plugin_images.clone(),
+                        },
                         variables.clone(),
                     )?;
                     let keys = match brightness.keys.filter(|&percent| percent < 100) {
@@ -395,6 +403,17 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
                 }))
             });
             let dispatcher_plugins = plugins.clone();
+            // A run that draws keypad pages tells the app which keys plugins draw, and takes their images.
+            let plugin_keys = match (&plugins, &artwork) {
+                (Some(bridge), Some(Artwork::Keys(_))) => PluginKeys::new(
+                    engine.profile(),
+                    device.clone(),
+                    plugin_images,
+                    bridge.clone(),
+                    variables.clone(),
+                ),
+                _ => None,
+            };
             // The run's mode lives in one flag the dispatcher reads for every action, so a supervisor can switch it
             // in place; without `--control` the dispatcher is fixed at start, as before.
             let mode = control.then(|| Arc::new(AtomicBool::new(execute)));
@@ -439,6 +458,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
                     }),
                     variables: Some(variables.clone()),
                     plugins: plugins.clone(),
+                    plugin_images: plugin_keys.clone(),
                     profile: profile_slot.map(|slot| {
                         let variables = variables.clone();
                         Box::new(move |value: &serde_json::Value| {
@@ -504,9 +524,15 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
                     // Fail closed before software mode: folder navigation must
                     // not run live without its display.
                     let display = Some(match artwork {
-                        Artwork::Keys(artwork) => live_display(&shared, selected.module, artwork)?
-                            .with_press_feedback(press_feedback)
-                            .with_variables(variables.clone()),
+                        Artwork::Keys(artwork) => {
+                            let display = live_display(&shared, selected.module, artwork)?
+                                .with_press_feedback(press_feedback)
+                                .with_variables(variables.clone());
+                            match plugin_keys {
+                                Some(keys) => display.with_plugin_keys(keys),
+                                None => display,
+                            }
+                        }
                         Artwork::Dial(artwork) => {
                             live_dial_display(&shared, selected.module, artwork)?
                         }

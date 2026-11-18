@@ -14,7 +14,8 @@
       ]
     },
     { "id": "count", "label": "Count presses" },
-    { "id": "hold", "label": "Report how long a key is held", "events": true }
+    { "id": "hold", "label": "Report how long a key is held", "events": true },
+    { "id": "counter", "label": "Counter", "image": true }
   ],
   "conditions": [
     {

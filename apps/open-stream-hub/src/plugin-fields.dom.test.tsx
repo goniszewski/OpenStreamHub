@@ -3,6 +3,7 @@ import { act, useState } from 'react';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { Invoke } from './profile-session';
 import { ActionFields } from './ActionFields';
+import { PluginKeyNote } from './PluginFields';
 import { render } from './dom-test';
 import type { Rendered } from './dom-test';
 import type { BindingAction } from './contracts';
@@ -163,5 +164,35 @@ describe('plugin action fields in the DOM', () => {
     expect(view.container.textContent).toContain('No plugins are installed.');
     expect(view.container.textContent).toContain('Plugins folder: /p');
     expect(lights.actions.length).toBe(2);
+  });
+});
+
+describe('the inspector line on a key a plugin draws', () => {
+  const drawing: PluginListing = { ...listing, plugins: listing.plugins.map(plugin => plugin.manifest
+    ? { ...plugin, manifest: { ...plugin.manifest, actions: [{ ...lights.actions[0], image: true }, lights.actions[1]] } } : plugin) };
+  const noteFor = (bindings: { serial_number?: string; action: BindingAction }[], plugins: PluginListing | null = drawing) => {
+    view?.unmount();
+    view = render(<PluginsContext.Provider value={{ listing: plugins, error: null, refresh: () => {} }}><PluginKeyNote bindings={bindings} /></PluginsContext.Provider>);
+    return view.container.querySelector('.plugin-draws-key')?.textContent ?? null;
+  };
+  const note = (action: BindingAction | undefined, plugins: PluginListing | null = drawing) =>
+    noteFor(action ? [{ action }] : [], plugins);
+  const toggle: BindingAction = { type: 'plugin', plugin: 'com.example.lights', min_version: '1.0.0', action: 'toggle' };
+
+  it('says the plugin draws the key while a Live run uses it, only for an action that draws its keys', () => {
+    expect(note(toggle)).toBe('The plugin draws this key while a Live run uses it. Here, in Test, and until its first picture, the key shows its own face.');
+    expect(note({ ...toggle, action: 'set' })).toBeNull();
+    expect(note(toggle, listing)).toBeNull();
+    expect(note({ type: 'multi_action', actions: [toggle as Extract<BindingAction, { type: 'plugin' }>] })).toBeNull();
+    expect(note(undefined)).toBeNull();
+  });
+
+  it('says the plugin may draw the key when a binding for one serial decides which runs', () => {
+    const notify: BindingAction = { type: 'toggle_mute' };
+    expect(noteFor([{ action: notify }, { serial_number: 'ABC', action: toggle }])).toContain('The plugin may draw this key');
+    expect(noteFor([{ serial_number: 'ABC', action: toggle }, { action: notify }])).toContain('may draw');
+    expect(noteFor([{ serial_number: 'ABC', action: notify }, { action: notify }])).toBeNull();
+    // Without serials, only the first binding counts.
+    expect(noteFor([{ action: notify }, { action: toggle }])).toBeNull();
   });
 });

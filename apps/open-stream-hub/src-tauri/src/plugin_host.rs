@@ -38,23 +38,37 @@
 //! neither the module run that relays it nor other plugins' presses. A press still waiting when its deadline passes is
 //! answered with an error and never sent. Known secret values are replaced with `[secret]` in what
 //! the plugin sends back (its log, stderr and error texts) before it is kept or passed on.
+//!
+//! Key images (step 4c): a module run's `plugin_key` records say which of its keys a plugin action is bound to and
+//! whether each is on screen. Each key gets an id, `k<n>`, new for each run and kept while the run lasts (a new one
+//! when the slot's plugin or action changes). A plugin that may hear of a shown key ([`plugins::check_key`], the
+//! run executing with it, the plugin connected) is sent `{"type":"appear","key":…,"action":…,"params":…,"control":…}`,
+//! again for every shown key after its `welcome`, and `{"type":"disappear","key":…}` once it should no longer hear of
+//! one. Its `set_image` (a 72×72 PNG or JPEG of at most [`MAX_IMAGE_BYTES`], re-encoded as the module's baseline
+//! JPEG) and `clear_image` go to the run's control channel as `plugin_image` and `plugin_image_clear`, at most
+//! [`MAX_IMAGES_PER_SECOND`] of the two a second per plugin and [`MAX_QUEUED_IMAGES`] of a plugin's waiting for one
+//! run; the reply waits for the module's answer, on the run's own image thread, so the plugin's reader never waits
+//! for a module. When a plugin stops for any reason, every run it drew on
+//! is sent `{"type":"plugin_image_clear","plugin":…}`.
 
 use crate::{
     plugin_secrets::PluginSecrets,
     plugins::{self, Approval, Approved, Manifest},
 };
+use base64::Engine as _;
+use cooltek_sdk_cli::image_prep::{PrepareOptions, prepare_keypad_image, within_frame_budget};
 use cooltek_sdk_service::{PluginUse, PluginUseKind, PluginValue};
 use serde::Serialize;
 use serde_json::{Value, json};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, VecDeque},
     fs,
-    io::{self, BufRead, BufReader, Read, Write},
+    io::{self, BufRead, BufReader, Cursor, Read, Write},
     os::unix::{fs::PermissionsExt, net::UnixListener, net::UnixStream},
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     sync::{
-        Arc, Condvar, Mutex, MutexGuard, Weak,
+        Arc, Condvar, Mutex, MutexGuard, PoisonError, Weak,
         atomic::{AtomicBool, AtomicUsize, Ordering},
         mpsc,
     },
@@ -92,6 +106,15 @@ const MAX_LOGS_PER_SECOND: usize = 20;
 const MAX_EVENTS_PER_SECOND: usize = 50;
 /// Input events waiting for a plugin that is not reading its socket; more are dropped and counted.
 const MAX_QUEUED_EVENTS: usize = 64;
+/// `set_image` and `clear_image` one plugin may send a second, together; more are refused and counted in its log.
+pub const MAX_IMAGES_PER_SECOND: usize = 20;
+/// The largest key image a plugin may send, decoded.
+pub const MAX_IMAGE_BYTES: usize = 32 * 1024;
+/// A key image's width and height.
+const KEY_SIDE: u32 = 72;
+/// One plugin's `set_image` and `clear_image` waiting for one module run; more of its own are refused until the run
+/// catches up, so one plugin cannot hold up another's.
+const MAX_QUEUED_IMAGES: usize = 32;
 /// Bytes waiting to be written to one plugin. Past this an input event is dropped, and any other line ends the
 /// connection: a plugin that reads nothing while it is sent this much is not working.
 const MAX_OUTBOX_BYTES: usize = 1024 * 1024;
@@ -125,6 +148,160 @@ pub const CHECK_WITHOUT_VALUE: &str = "the plugin answered a check without true 
 
 /// An invoke handed to an invoke thread: the run it came from, the record, its answer and when it arrived.
 type Queued = (String, Value, Reply, Instant);
+
+/// Sends one control request to a module run and waits for its answer: `Err` with the run's own message when it
+/// refuses, ends or does not answer in time.
+pub type RunControl = Arc<dyn Fn(Value) -> Result<(), String> + Send + Sync>;
+
+/// One keypad slot of a module run whose first binding runs a plugin action, as the run's last `plugin_key` said.
+struct Tile {
+    /// The id the plugin knows it by.
+    key: String,
+    plugin: String,
+    min_version: String,
+    action: String,
+    params: BTreeMap<String, PluginValue>,
+    variables: Vec<String>,
+    control: Value,
+    /// On screen now.
+    shown: bool,
+    /// The generation of the plugin process told it appeared, until it is told it disappeared.
+    told: Option<u64>,
+    /// Its plugin's running process was sent an `appear` for it (the key may have gone off screen since): only then
+    /// does it take the plugin's images, so a guessed id of a key the plugin may not hear of draws nothing.
+    ever_told: bool,
+}
+
+/// One control request for a run's image thread, and where its answer goes: the plugin's connection, the id of its
+/// message and the plugin's count of requests waiting for this run, or nowhere (a clear the app sends itself).
+struct ImageJob {
+    control: RunControl,
+    body: Value,
+    reply: Option<(Arc<Conn>, Value, Arc<AtomicUsize>)>,
+}
+
+/// A run's image requests, one lane per plugin, taken in turn: one plugin's backlog never holds up another's. The
+/// app's own clear of a plugin's images goes at the end of that plugin's lane, after the images it still has queued.
+#[derive(Default)]
+struct ImageLanes {
+    lanes: BTreeMap<String, VecDeque<ImageJob>>,
+    /// The plugin whose request was taken last.
+    turn: Option<String>,
+    /// The run is gone: what is queued is still taken (and fails at once), then the thread ends.
+    closed: bool,
+}
+
+impl ImageLanes {
+    /// The next request: from the first plugin after the last one served that has one, wrapping around.
+    fn next(&mut self) -> Option<ImageJob> {
+        let plugin = match &self.turn {
+            Some(turn) => self
+                .lanes
+                .range::<str, _>((
+                    std::ops::Bound::Excluded(turn.as_str()),
+                    std::ops::Bound::Unbounded,
+                ))
+                .next()
+                .or_else(|| self.lanes.iter().next()),
+            None => self.lanes.iter().next(),
+        }
+        .map(|(plugin, _)| plugin.clone())?;
+        let lane = self.lanes.get_mut(&plugin)?;
+        let job = lane.pop_front();
+        if lane.is_empty() {
+            self.lanes.remove(&plugin);
+        }
+        self.turn = Some(plugin);
+        job
+    }
+}
+
+/// The sending side of a run's image thread; dropping it (with its run) lets the thread end.
+struct ImageQueue(Arc<(Mutex<ImageLanes>, Condvar)>);
+
+impl ImageQueue {
+    /// Starts the thread that hands the run its image requests, one at a time.
+    fn start() -> io::Result<Self> {
+        let shared = Arc::new((Mutex::new(ImageLanes::default()), Condvar::new()));
+        let queued = Arc::clone(&shared);
+        thread::Builder::new()
+            .name("plugin-images".into())
+            .spawn(move || {
+                let (lock, ready) = &*queued;
+                loop {
+                    let job = {
+                        let mut lanes = lock.lock().unwrap_or_else(PoisonError::into_inner);
+                        loop {
+                            if let Some(job) = lanes.next() {
+                                break job;
+                            }
+                            if lanes.closed {
+                                return;
+                            }
+                            lanes = ready.wait(lanes).unwrap_or_else(PoisonError::into_inner);
+                        }
+                    };
+                    let result = (job.control)(job.body);
+                    if let Some((conn, id, waiting)) = job.reply {
+                        waiting.fetch_sub(1, Ordering::SeqCst);
+                        let answer = match result {
+                            Ok(()) => json!({"type":"reply","id":id,"ok":true}),
+                            Err(error) => json!({"type":"reply","id":id,"ok":false,
+                                "error":truncate(&error, MAX_ERROR_BYTES)}),
+                        };
+                        let _ = conn.send(&answer);
+                    }
+                }
+            })?;
+        Ok(Self(shared))
+    }
+
+    fn push(&self, plugin: &str, job: ImageJob) {
+        let (lock, ready) = &*self.0;
+        let mut lanes = lock.lock().unwrap_or_else(PoisonError::into_inner);
+        lanes
+            .lanes
+            .entry(plugin.to_string())
+            .or_default()
+            .push_back(job);
+        ready.notify_one();
+    }
+}
+
+impl Drop for ImageQueue {
+    fn drop(&mut self) {
+        let (lock, ready) = &*self.0;
+        lock.lock().unwrap_or_else(PoisonError::into_inner).closed = true;
+        ready.notify_one();
+    }
+}
+
+/// The keys one module run has told of, and the plugins that drew on it.
+#[derive(Default)]
+struct KeyRun {
+    /// Which run of this service id it is: grows with each run, so a late record of an ended run is told apart.
+    run: u64,
+    /// By page id and slot.
+    tiles: BTreeMap<(String, u64), Tile>,
+    /// The latest way to reach the run.
+    control: Option<RunControl>,
+    /// Plugins that sent this run an image since they last started, so their stop clears it.
+    drawn: BTreeSet<String>,
+    /// The run's image thread, started with its first request; it ends when this is dropped.
+    jobs: Option<ImageQueue>,
+    /// Each plugin's requests it has not answered yet.
+    waiting: HashMap<String, Arc<AtomicUsize>>,
+}
+
+/// Every module run's keys, and where each key id points: (run, (page, slot)).
+#[derive(Default)]
+struct Keys {
+    runs: HashMap<String, KeyRun>,
+    ids: HashMap<String, (String, (String, u64))>,
+    next: u64,
+    /// The latest run of each service id that ended; its late records are ignored.
+    ended: HashMap<String, u64>,
+}
 
 /// The parameters the profile gave and those with the secrets filled in.
 type Filled = (BTreeMap<String, PluginValue>, BTreeMap<String, PluginValue>);
@@ -336,6 +513,9 @@ struct Instance {
     event_rate: Window,
     /// Events dropped by the rate limit since the last one sent, told in the log with the next one sent.
     dropped_events: u64,
+    image_rate: Window,
+    /// Images refused by the rate limit since the last one taken, told in the log with the next one taken.
+    dropped_images: u64,
 }
 
 impl Instance {
@@ -362,6 +542,8 @@ impl Instance {
             log_rate: Window::default(),
             event_rate: Window::default(),
             dropped_events: 0,
+            image_rate: Window::default(),
+            dropped_images: 0,
         }
     }
 
@@ -398,6 +580,74 @@ impl State {
     fn needed(&self) -> BTreeSet<String> {
         self.usage.values().flatten().cloned().collect()
     }
+
+    /// The `appear` the run `service_id`'s `tile` is told to its plugin with, the connection it goes on and that
+    /// process's generation; `None` when the plugin may not hear of it now: the run does not execute with it, it is
+    /// not connected, or its manifest does not accept the tile (an action without `image`, an older version,
+    /// parameters it does not declare or a secret's value). The parameters are the profile's: no secrets.
+    fn appear_of(&self, service_id: &str, tile: &Tile) -> Option<(Arc<Conn>, u64, Value)> {
+        if !self
+            .usage
+            .get(service_id)
+            .is_some_and(|plugins| plugins.contains(&tile.plugin))
+        {
+            return None;
+        }
+        let instance = self.instances.get(&tile.plugin)?;
+        let manifest = instance.manifest.as_ref()?;
+        let (Some(_), Some(conn)) = (&instance.child, &instance.conn) else {
+            return None;
+        };
+        if !manifest.satisfies(&tile.min_version)
+            || plugins::check_key(manifest, &tile.action, &tile.params, &tile.variables).is_err()
+        {
+            return None;
+        }
+        // The same text limits as an invoke's.
+        cooltek_sdk_service::plugin::validate_plugin_action(
+            &tile.plugin,
+            "0.0.0",
+            &tile.action,
+            &tile.params,
+            &[],
+        )
+        .ok()?;
+        let message = json!({"type": "appear", "key": tile.key, "action": tile.action,
+            "params": tile.params, "control": tile.control});
+        if message.to_string().len() > MAX_LINE {
+            return None;
+        }
+        Some((Arc::clone(conn), instance.generation, message))
+    }
+
+    /// Brings what `tile`'s plugin was told in line with whether the tile is shown and it may hear of it now: an
+    /// `appear` it was not sent yet, or a `disappear` for one it was sent (only to the process that was told).
+    fn tell(&self, service_id: &str, tile: &mut Tile) {
+        let appear = if tile.shown {
+            self.appear_of(service_id, tile)
+        } else {
+            None
+        };
+        match (appear, tile.told) {
+            (Some((_, generation, _)), Some(told)) if told == generation => {}
+            (Some((conn, generation, message)), _) => {
+                // A full outbox closes the connection, which its reader then reports.
+                let _ = conn.send(&message);
+                tile.told = Some(generation);
+                tile.ever_told = true;
+            }
+            (None, Some(told)) => {
+                if let Some(instance) = self.instances.get(&tile.plugin)
+                    && instance.generation == told
+                    && let Some(conn) = &instance.conn
+                {
+                    let _ = conn.send(&json!({"type": "disappear", "key": tile.key}));
+                }
+                tile.told = None;
+            }
+            (None, None) => {}
+        }
+    }
 }
 
 /// Sends a module's variable write on to every running module, as ingress does.
@@ -422,6 +672,8 @@ struct Inner {
     /// The plugin id and process group of each process being stopped in the background, until no process of the
     /// group is left (or [`STOP_WAIT`] passed).
     stopping: Mutex<Vec<(String, i32)>>,
+    /// The keys module runs have told of. Taken after `state` when both are held.
+    keys: Mutex<Keys>,
 }
 
 /// What Settings shows about one running or wanted plugin.
@@ -482,6 +734,56 @@ fn input_of(record: &Value) -> Option<Value> {
         rebuilt["position"] = json!({"raw": raw, "maximum": maximum});
     }
     Some(rebuilt)
+}
+
+/// A record's `control`, rebuilt from its known fields as in [`input_of`]: `{"module":…,"index":…}`.
+fn control_of(control: &Value) -> Option<Value> {
+    let module = control["module"].as_str().filter(|module| {
+        !module.is_empty()
+            && module.len() <= 32
+            && module
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+    })?;
+    let index = control["index"].as_u64().filter(|index| *index <= 255)?;
+    Some(json!({"module": module, "index": index}))
+}
+
+/// A plugin's `set_image` picture as the module draws it: standard base64 of a 72×72 PNG or JPEG of at most
+/// [`MAX_IMAGE_BYTES`] (the size is checked before decoding, the dimensions from the header before the pixels),
+/// re-encoded as the module's 72×72 baseline JFIF, in standard base64.
+fn prepare_key_image(image: &Value) -> Result<String, String> {
+    let too_big = || format!("the image is larger than {} KiB", MAX_IMAGE_BYTES / 1024);
+    let text = image
+        .as_str()
+        .ok_or("the message has no image (base64 of a PNG or JPEG)")?;
+    // Four base64 characters carry three bytes.
+    if text.len() > MAX_IMAGE_BYTES.div_ceil(3) * 4 {
+        return Err(too_big());
+    }
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(text)
+        .map_err(|_| "the image is not standard base64".to_string())?;
+    if bytes.len() > MAX_IMAGE_BYTES {
+        return Err(too_big());
+    }
+    let format = match image::guess_format(&bytes) {
+        Ok(format @ (image::ImageFormat::Png | image::ImageFormat::Jpeg)) => format,
+        _ => return Err("the image is not a PNG or JPEG".into()),
+    };
+    let (width, height) = image::ImageReader::with_format(Cursor::new(&bytes), format)
+        .into_dimensions()
+        .map_err(|error| format!("the image could not be read: {error}"))?;
+    if (width, height) != (KEY_SIDE, KEY_SIDE) {
+        return Err(format!(
+            "the image is {width}×{height}; a key image is {KEY_SIDE}×{KEY_SIDE}"
+        ));
+    }
+    let jpeg = within_frame_budget(PrepareOptions::default(), |options| {
+        prepare_keypad_image(&bytes, options)
+    })
+    .map_err(|error| format!("the image could not be read: {error}"))?;
+    Ok(base64::engine::general_purpose::STANDARD.encode(jpeg))
 }
 
 fn truncate(text: &str, bytes: usize) -> String {
@@ -606,6 +908,7 @@ impl PluginHost {
             unnamed: AtomicUsize::new(0),
             paused: Mutex::new(BTreeSet::new()),
             stopping: Mutex::new(Vec::new()),
+            keys: Mutex::new(Keys::default()),
         }));
         let spawn = |name: &str, run: Box<dyn FnOnce() + Send>| {
             thread::Builder::new()
@@ -701,6 +1004,363 @@ impl PluginHost {
                 }
             }
         }
+        // This run's keys appear to the plugins it now executes with, and disappear from those it no longer does,
+        // whose pictures it drops: they could not clear them themselves any more.
+        if let Some(run) = self.keys().runs.get_mut(service_id) {
+            for tile in run.tiles.values_mut() {
+                state.tell(service_id, tile);
+            }
+            for gone in previous.difference(&current) {
+                if run.drawn.remove(gone)
+                    && let Some(control) = run.control.clone()
+                {
+                    let body = json!({"type": "plugin_image_clear", "plugin": gone});
+                    let _ = Self::queue_image(run, control, gone, body, None);
+                }
+            }
+        }
+    }
+
+    fn keys(&self) -> MutexGuard<'_, Keys> {
+        self.0
+            .keys
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Carries one `plugin_key` record of the module run `service_id` (a keypad slot whose first binding runs a
+    /// plugin action was `shown` or `hidden`) to its plugin as `appear` or `disappear`, when it may hear of it, and
+    /// keeps it either way, so a plugin that connects later hears of the keys on screen. `control` reaches the run,
+    /// for the plugin's images; `run` tells this run of `service_id` from earlier ones, whose late records are
+    /// dropped. A malformed record is dropped. Never waits for the plugin, and nothing is answered.
+    pub fn key(&self, service_id: &str, run: u64, record: &Value, control: RunControl) {
+        if self.0.stopped.load(Ordering::SeqCst) {
+            return;
+        }
+        let parsed = (|| {
+            let page = record["page"]
+                .as_str()
+                .filter(|page| !page.is_empty() && page.len() <= 128)?;
+            let slot = record["slot"].as_u64().filter(|slot| *slot <= 255)?;
+            let shown = match record["state"].as_str()? {
+                "shown" => true,
+                "hidden" => false,
+                _ => return None,
+            };
+            if !shown {
+                return Some(((page.to_string(), slot), None));
+            }
+            let params: BTreeMap<String, PluginValue> =
+                serde_json::from_value(record["params"].clone()).ok()?;
+            let variables: Vec<String> = match &record["variables"] {
+                Value::Null => Vec::new(),
+                names => serde_json::from_value(names.clone()).ok()?,
+            };
+            let tile = Tile {
+                key: String::new(),
+                plugin: record["plugin"].as_str()?.to_string(),
+                min_version: record["min_version"]
+                    .as_str()
+                    .unwrap_or("0.0.0")
+                    .to_string(),
+                action: record["action"].as_str()?.to_string(),
+                params,
+                variables,
+                control: control_of(&record["control"])?,
+                shown: true,
+                told: None,
+                ever_told: false,
+            };
+            Some(((page.to_string(), slot), Some(tile)))
+        })();
+        let Some((place, tile)) = parsed else {
+            return;
+        };
+        let state = self.lock();
+        let mut guard = self.keys();
+        if guard
+            .ended
+            .get(service_id)
+            .is_some_and(|ended| *ended >= run)
+        {
+            return;
+        }
+        let Keys {
+            runs, ids, next, ..
+        } = &mut *guard;
+        match runs.get(service_id).map(|kept| kept.run) {
+            Some(kept) if kept > run => return,
+            // A newer run of the id whose end was not reported: the old one's keys are over.
+            Some(kept) if kept < run => {
+                if let Some(mut old) = runs.remove(service_id) {
+                    for tile in old.tiles.values_mut() {
+                        tile.shown = false;
+                        state.tell(service_id, tile);
+                        ids.remove(&tile.key);
+                    }
+                }
+            }
+            _ => {}
+        }
+        let number = run;
+        let run = runs.entry(service_id.to_string()).or_default();
+        run.run = number;
+        run.control = Some(control);
+        let Some(mut tile) = tile else {
+            if let Some(tile) = run.tiles.get_mut(&place) {
+                tile.shown = false;
+                state.tell(service_id, tile);
+            }
+            return;
+        };
+        match run.tiles.get_mut(&place) {
+            // The same plugin action: the same key, told again only when what it is told changed.
+            Some(kept) if kept.plugin == tile.plugin && kept.action == tile.action => {
+                let changed = kept.shown
+                    && (
+                        &kept.params,
+                        &kept.variables,
+                        &kept.control,
+                        &kept.min_version,
+                    ) != (
+                        &tile.params,
+                        &tile.variables,
+                        &tile.control,
+                        &tile.min_version,
+                    );
+                kept.params = tile.params;
+                kept.variables = tile.variables;
+                kept.control = tile.control;
+                kept.min_version = tile.min_version;
+                kept.shown = true;
+                // Told again with what changed, without a disappear first, when it may still be told; otherwise
+                // `tell` sends the disappear for what it was told.
+                if changed && state.appear_of(service_id, kept).is_some() {
+                    kept.told = None;
+                }
+                state.tell(service_id, kept);
+            }
+            // Another plugin or action now: the old key disappears and is forgotten, and the slot gets a new one.
+            _ => {
+                if let Some(mut old) = run.tiles.remove(&place) {
+                    old.shown = false;
+                    state.tell(service_id, &mut old);
+                    ids.remove(&old.key);
+                }
+                *next += 1;
+                tile.key = format!("k{next}");
+                ids.insert(tile.key.clone(), (service_id.to_string(), place.clone()));
+                state.tell(service_id, &mut tile);
+                run.tiles.insert(place, tile);
+            }
+        }
+    }
+
+    /// The module run `service_id` ended (its process is gone): every key it told of disappears and its ids are
+    /// forgotten, so a new run of the same id starts with new ones. Records of `run` that come later are dropped.
+    pub fn run_ended(&self, service_id: &str, run: u64) {
+        let state = self.lock();
+        let mut keys = self.keys();
+        let ended = keys.ended.entry(service_id.to_string()).or_default();
+        *ended = (*ended).max(run);
+        if keys.runs.get(service_id).is_none_or(|kept| kept.run > run) {
+            return;
+        }
+        let Some(mut run) = keys.runs.remove(service_id) else {
+            return;
+        };
+        for tile in run.tiles.values_mut() {
+            tile.shown = false;
+            state.tell(service_id, tile);
+            keys.ids.remove(&tile.key);
+        }
+    }
+
+    /// The plugin `id` stopped (for any reason): what its process was told is void, and every run it drew on is told
+    /// to drop its images, after the images it still has queued. Called with the state lock held.
+    fn forget_images(&self, id: &str) {
+        let mut keys = self.keys();
+        for run in keys.runs.values_mut() {
+            for tile in run.tiles.values_mut().filter(|tile| tile.plugin == id) {
+                // The next process draws only the keys it is told of itself.
+                tile.told = None;
+                tile.ever_told = false;
+            }
+            if run.drawn.remove(id)
+                && let Some(control) = run.control.clone()
+            {
+                let body = json!({"type": "plugin_image_clear", "plugin": id});
+                let _ = Self::queue_image(run, control, id, body, None);
+            }
+        }
+    }
+
+    /// Hands one control request of `plugin`'s lane to the run's image thread, starting it with the first. The
+    /// plugin's own request (`reply`: its connection and its message's id) is refused while [`MAX_QUEUED_IMAGES`] of
+    /// its own wait for the run; the app's own clear (no `reply`) never is.
+    fn queue_image(
+        run: &mut KeyRun,
+        control: RunControl,
+        plugin: &str,
+        body: Value,
+        reply: Option<(Arc<Conn>, Value)>,
+    ) -> Result<(), String> {
+        let reply = reply.map(|(conn, id)| {
+            let waiting = Arc::clone(run.waiting.entry(plugin.to_string()).or_default());
+            (conn, id, waiting)
+        });
+        if let Some((_, _, waiting)) = &reply
+            && waiting.load(Ordering::SeqCst) >= MAX_QUEUED_IMAGES
+        {
+            return Err(format!(
+                "the module has {MAX_QUEUED_IMAGES} of this plugin's images still to take; send fewer"
+            ));
+        }
+        if run.jobs.is_none() {
+            run.jobs = Some(
+                ImageQueue::start()
+                    .map_err(|error| format!("could not start sending images: {error}"))?,
+            );
+        }
+        if let Some((_, _, waiting)) = &reply {
+            waiting.fetch_add(1, Ordering::SeqCst);
+        }
+        if let Some(jobs) = &run.jobs {
+            jobs.push(
+                plugin,
+                ImageJob {
+                    control,
+                    body,
+                    reply,
+                },
+            );
+        }
+        Ok(())
+    }
+
+    /// Checks a plugin's `set_image` or `clear_image` and queues it for the key's run; the reply comes from the run's
+    /// image thread once the module answered. `Err` is the reply to send now.
+    fn key_image(
+        &self,
+        id: &str,
+        conn: &Arc<Conn>,
+        message: &Value,
+        image: bool,
+    ) -> Result<(), String> {
+        let key = message["key"].as_str().ok_or("the message names no key")?;
+        let (service_id, (page, slot)) = {
+            let mut guard = self.lock();
+            let state = &mut *guard;
+            let keys = self.keys();
+            let (service_id, place) =
+                keys.ids.get(key).cloned().ok_or_else(|| {
+                    format!("unknown key {key}: it is not a key of a module run now")
+                })?;
+            let tile = keys
+                .runs
+                .get(&service_id)
+                .and_then(|run| run.tiles.get(&place))
+                .ok_or_else(|| format!("unknown key {key}: it is not a key of a module run now"))?;
+            // A key of another plugin, or one this plugin was never told of, is answered as an id that does not
+            // exist, so a guess learns nothing.
+            if tile.plugin != id || !tile.ever_told {
+                return Err(format!(
+                    "unknown key {key}: it is not a key of a module run now"
+                ));
+            }
+            let instance = state
+                .instances
+                .get_mut(id)
+                .ok_or("this plugin is not running")?;
+            let manifest = instance
+                .manifest
+                .as_ref()
+                .ok_or("this plugin is not running")?;
+            if !manifest
+                .action(&tile.action)
+                .is_some_and(|action| action.image)
+            {
+                return Err(format!(
+                    "{} does not draw its keys: its manifest does not set \"image\": true",
+                    tile.action
+                ));
+            }
+            if !manifest.satisfies(&tile.min_version) {
+                return Err(format!(
+                    "key {key} needs {} {} or newer",
+                    manifest.name, tile.min_version
+                ));
+            }
+            if !state
+                .usage
+                .get(&service_id)
+                .is_some_and(|plugins| plugins.contains(id))
+            {
+                return Err(format!("key {key} is not on a Live module run now"));
+            }
+            // set_image and clear_image count together.
+            if !instance.image_rate.allow(MAX_IMAGES_PER_SECOND) {
+                instance.dropped_images += 1;
+                return Err(format!(
+                    "at most {MAX_IMAGES_PER_SECOND} set_image and clear_image a second"
+                ));
+            }
+            if instance.dropped_images > 0 {
+                let dropped = std::mem::take(&mut instance.dropped_images);
+                instance.keep_log(format!(
+                    "{dropped} set_image and clear_image were refused: more than {MAX_IMAGES_PER_SECOND} a second"
+                ));
+            }
+            (service_id, place)
+        };
+        // Decoded and re-encoded without a lock held.
+        let body = if image {
+            let jpeg = prepare_key_image(&message["image"])?;
+            json!({"type": "plugin_image", "page": page, "slot": slot, "jpeg": jpeg})
+        } else {
+            json!({"type": "plugin_image_clear", "page": page, "slot": slot})
+        };
+        // The plugin may have stopped (its images cleared), the run left Live, the run ended or the key changed hands
+        // meanwhile: checked again under both locks, in their order, so nothing is queued after a clear.
+        let state = self.lock();
+        let mut keys = self.keys();
+        let current = state
+            .instances
+            .get(id)
+            .and_then(|instance| instance.conn.as_ref())
+            .is_some_and(|current| Arc::ptr_eq(current, conn));
+        if !current {
+            return Err("this plugin stopped while the image was prepared".into());
+        }
+        if !state
+            .usage
+            .get(&service_id)
+            .is_some_and(|plugins| plugins.contains(id))
+        {
+            return Err(format!("key {key} is not on a Live module run now"));
+        }
+        let run = keys
+            .runs
+            .get_mut(&service_id)
+            .filter(|run| {
+                run.tiles
+                    .get(&(page.clone(), slot))
+                    .is_some_and(|tile| tile.key == key)
+            })
+            .ok_or_else(|| format!("unknown key {key}: it is not a key of a module run now"))?;
+        let control = run
+            .control
+            .clone()
+            .ok_or("the module run cannot be reached")?;
+        let reply = Some((
+            Arc::clone(conn),
+            message.get("id").cloned().unwrap_or(Value::Null),
+        ));
+        Self::queue_image(run, control, id, body, reply)?;
+        if image {
+            run.drawn.insert(id.to_string());
+        }
+        Ok(())
     }
 
     /// Records that the user enabled `fingerprint` for `id`, or with `None` that they disabled it. A plugin a Live run
@@ -810,6 +1470,7 @@ impl PluginHost {
 
     /// Stops an instance's process and connection and fails what it still owed.
     fn halt(&self, id: &str, instance: &mut Instance, why: &str) {
+        self.forget_images(id);
         if let Some(child) = instance.child.take() {
             self.stop_child(id, child);
         }
@@ -987,6 +1648,7 @@ impl PluginHost {
 
     /// Notes a failure of a wanted plugin and plans its restart, or gives up after too many.
     fn failed(&self, id: &str, instance: &mut Instance, error: String) {
+        self.forget_images(id);
         if let Some(child) = instance.child.take() {
             self.stop_child(id, child);
         }
@@ -1267,6 +1929,15 @@ impl PluginHost {
             // A new process starts with a fresh limit and no count from the last one.
             instance.event_rate = Window::default();
             instance.dropped_events = 0;
+            instance.image_rate = Window::default();
+            instance.dropped_images = 0;
+            // After the welcome, it hears of every key of its own on screen.
+            let mut keys = self.keys();
+            for (service_id, run) in keys.runs.iter_mut() {
+                for tile in run.tiles.values_mut().filter(|tile| tile.plugin == id) {
+                    state.tell(service_id, tile);
+                }
+            }
         }
         let (host, writer_id, weak) = (self.clone(), id.to_string(), Arc::downgrade(&conn));
         if thread::Builder::new()
@@ -1362,6 +2033,12 @@ impl PluginHost {
                     } else {
                         instance.dropped_logs += 1;
                     }
+                }
+            }
+            Some(kind @ ("set_image" | "clear_image")) => {
+                if let Err(error) = self.key_image(id, conn, message, kind == "set_image") {
+                    // The error may quote the plugin's own key back.
+                    reply(Err(truncate(&error, MAX_ERROR_BYTES)));
                 }
             }
             Some("pong") => {}
@@ -1889,6 +2566,10 @@ mod tests {
                 { "id": "talk", "label": "Talk", "events": true, "params": [
                     { "id": "channel", "label": "Channel", "type": "text", "variables": true },
                     { "id": "key", "label": "Key", "type": "text", "secret": true, "required": true }
+                ] },
+                { "id": "art", "label": "Art", "image": true, "params": [
+                    { "id": "name", "label": "Name", "type": "text", "variables": true },
+                    { "id": "pin", "label": "PIN", "type": "text", "secret": true, "required": true }
                 ] },
                 { "id": "bulk", "label": "Bulk", "params": [
                     { "id": "s1", "label": "S1", "type": "text", "secret": true },
@@ -2525,6 +3206,570 @@ mod tests {
         );
     }
 
+    /// A run's control channel: records what it is sent, and refuses anything for slot 7, as a run that draws no
+    /// keys would.
+    fn run_control() -> (RunControl, Arc<Mutex<Vec<Value>>>) {
+        let sent = Arc::new(Mutex::new(Vec::new()));
+        let seen = Arc::clone(&sent);
+        let control: RunControl = Arc::new(move |body: Value| {
+            let refused = body["slot"] == 7;
+            seen.lock().unwrap().push(body);
+            if refused {
+                Err("this run does not draw keys".into())
+            } else {
+                Ok(())
+            }
+        });
+        (control, sent)
+    }
+
+    fn shown(
+        host: &PluginHost,
+        service: &str,
+        slot: u64,
+        action: &str,
+        params: Value,
+        control: &RunControl,
+    ) {
+        shown_in(host, service, 1, slot, action, params, control);
+    }
+
+    /// A key shown by the run numbered `run` of `service`.
+    fn shown_in(
+        host: &PluginHost,
+        service: &str,
+        run: u64,
+        slot: u64,
+        action: &str,
+        params: Value,
+        control: &RunControl,
+    ) {
+        host.key(
+            service,
+            run,
+            &json!({"type":"plugin_key","state":"shown","page":"root","slot":slot,"plugin":ID,"min_version":"1.0.0",
+                "action":action,"params":params,"variables":[],"control":{"module":"m4315","index":slot,"extra":1}}),
+            Arc::clone(control),
+        );
+    }
+
+    fn hidden(host: &PluginHost, service: &str, slot: u64, control: &RunControl) {
+        host.key(
+            service,
+            1,
+            &json!({"type":"plugin_key","state":"hidden","page":"root","slot":slot}),
+            Arc::clone(control),
+        );
+    }
+
+    /// The id the app gave the run's key on the root page's `slot`.
+    fn key_at(host: &PluginHost, service: &str, slot: u64) -> String {
+        host.keys().runs[service].tiles[&("root".to_string(), slot)]
+            .key
+            .clone()
+    }
+
+    fn appear(key: &str, slot: u64) -> Value {
+        json!({"type":"appear","key":key,"action":"art","params":{"name":"x"},
+            "control":{"module":"m4315","index":slot}})
+    }
+
+    /// Standard base64 of a `side`×`side` picture in `format`.
+    fn picture(side: u32, format: image::ImageFormat) -> String {
+        let mut bytes = Cursor::new(Vec::new());
+        image::RgbImage::from_pixel(side, side, image::Rgb([200, 30, 10]))
+            .write_to(&mut bytes, format)
+            .unwrap();
+        base64::engine::general_purpose::STANDARD.encode(bytes.into_inner())
+    }
+
+    /// The reply to the plugin's message `id`, skipping pings and other replies.
+    fn reply_to(plugin: &mut Plugin, id: u64) -> Value {
+        loop {
+            let message = plugin.receive_message();
+            if message["type"] == "reply" && message["id"] == id {
+                return message;
+            }
+        }
+    }
+
+    #[test]
+    fn a_plugin_hears_when_its_keys_appear_and_disappear() {
+        let rig = rig(&["/bin/sleep", "30"]);
+        let host = &rig.host;
+        let (control, _) = run_control();
+        host.set_usage("m1", used());
+        // Shown before the plugin connected: kept, and told just after the welcome.
+        shown(host, "m1", 3, "art", json!({"name":"x"}), &control);
+        let k3 = key_at(host, "m1", 3);
+        let (mut plugin, welcome) = Plugin::hello(host, &host.token(ID));
+        assert_eq!(welcome["type"], "welcome");
+        assert_eq!(plugin.receive_message(), appear(&k3, 3));
+        // Not told: an action without "image", a run that does not use the plugin, a secret's value, a newer
+        // min_version, an undeclared parameter, a malformed record.
+        shown(host, "m1", 4, "set", json!({"entity":"a"}), &control);
+        shown(host, "m2", 5, "art", json!({"name":"x"}), &control);
+        shown(host, "m1", 6, "art", json!({"pin":"1234"}), &control);
+        host.key(
+            "m1",
+            1,
+            &json!({"type":"plugin_key","state":"shown","page":"root","slot":8,"plugin":ID,"min_version":"9.0.0",
+                "action":"art","params":{},"control":{"module":"m4315","index":8}}),
+            Arc::clone(&control),
+        );
+        shown(host, "m1", 9, "art", json!({"x":1}), &control);
+        host.key(
+            "m1",
+            1,
+            &json!({"type":"plugin_key","state":"shown","page":"root","slot":300,"plugin":ID,"action":"art",
+                "params":{},"control":{"module":"m4315","index":3}}),
+            Arc::clone(&control),
+        );
+        // Hidden and shown again: the same key.
+        hidden(host, "m1", 3, &control);
+        assert_eq!(
+            plugin.receive_message(),
+            json!({"type":"disappear","key":k3})
+        );
+        shown(host, "m1", 3, "art", json!({"name":"x"}), &control);
+        assert_eq!(plugin.receive_message(), appear(&k3, 3));
+        assert_eq!(key_at(host, "m1", 3), k3);
+        // Shown again with what may not be told (a newer min_version): it disappears, and appears once it may again.
+        host.key(
+            "m1",
+            1,
+            &json!({"type":"plugin_key","state":"shown","page":"root","slot":3,"plugin":ID,"min_version":"9.0.0",
+                "action":"art","params":{"name":"x"},"control":{"module":"m4315","index":3}}),
+            Arc::clone(&control),
+        );
+        assert_eq!(
+            plugin.receive_message(),
+            json!({"type":"disappear","key":k3})
+        );
+        shown(host, "m1", 3, "art", json!({"name":"x"}), &control);
+        assert_eq!(plugin.receive_message(), appear(&k3, 3));
+        // So with a secret's value.
+        shown(host, "m1", 3, "art", json!({"pin":"1234"}), &control);
+        assert_eq!(
+            plugin.receive_message(),
+            json!({"type":"disappear","key":k3})
+        );
+        shown(host, "m1", 3, "art", json!({"name":"x"}), &control);
+        assert_eq!(plugin.receive_message(), appear(&k3, 3));
+        // Shown again with the same parameters: nothing new to tell.
+        shown(host, "m1", 3, "art", json!({"name":"x"}), &control);
+        // A run that stops executing: its keys disappear, and appear again when it executes again.
+        host.set_usage("m1", None);
+        assert_eq!(
+            plugin.receive_message(),
+            json!({"type":"disappear","key":k3})
+        );
+        host.set_usage("m1", used());
+        assert_eq!(plugin.receive_message(), appear(&k3, 3));
+        // The run's other keys were never told, so the next line is about slot 3 again.
+        shown(host, "m1", 3, "art", json!({"name":"y"}), &control);
+        let again = plugin.receive_message();
+        assert_eq!(again["type"], "appear");
+        assert_eq!(again["params"], json!({"name":"y"}));
+        // Another action on the slot: the old key disappears and the slot gets a new one.
+        shown(host, "m1", 3, "set", json!({"entity":"a"}), &control);
+        assert_eq!(
+            plugin.receive_message(),
+            json!({"type":"disappear","key":k3})
+        );
+        assert_ne!(key_at(host, "m1", 3), k3);
+        shown(host, "m1", 3, "art", json!({"name":"x"}), &control);
+        let k3 = key_at(host, "m1", 3);
+        assert_eq!(plugin.receive_message(), appear(&k3, 3));
+        // The run ends: its keys disappear and their ids are forgotten.
+        host.run_ended("m1", 1);
+        assert_eq!(
+            plugin.receive_message(),
+            json!({"type":"disappear","key":k3})
+        );
+        plugin.send(json!({"type":"clear_image","id":1,"key":k3}));
+        let refused = reply_to(&mut plugin, 1);
+        assert_eq!(refused["ok"], false);
+        assert!(
+            refused["error"].as_str().unwrap().contains("unknown key"),
+            "{refused}"
+        );
+        // A late record of the ended run is dropped: it brings back no key.
+        shown(host, "m1", 3, "art", json!({"name":"x"}), &control);
+        assert!(!host.keys().runs.contains_key("m1"));
+        // A new run of the same id: new ids.
+        shown_in(host, "m1", 2, 3, "art", json!({"name":"x"}), &control);
+        let fresh = key_at(host, "m1", 3);
+        assert_ne!(fresh, k3);
+        assert_eq!(plugin.receive_message(), appear(&fresh, 3));
+        // A newer run whose predecessor's end was not reported: the older keys disappear first.
+        shown_in(host, "m1", 3, 3, "art", json!({"name":"x"}), &control);
+        assert_eq!(
+            plugin.receive_message(),
+            json!({"type":"disappear","key":fresh})
+        );
+        let newest = key_at(host, "m1", 3);
+        assert_ne!(newest, fresh);
+        assert_eq!(plugin.receive_message(), appear(&newest, 3));
+        // And a record of the older run now is stale.
+        shown_in(host, "m1", 2, 4, "art", json!({"name":"x"}), &control);
+        assert!(
+            !host.keys().runs["m1"]
+                .tiles
+                .contains_key(&("root".to_string(), 4))
+        );
+    }
+
+    #[test]
+    fn a_run_that_leaves_live_drops_the_images_its_plugins_drew() {
+        let rig = rig(&["/bin/sleep", "30"]);
+        let host = &rig.host;
+        let (control, sent) = run_control();
+        let (other, untouched) = run_control();
+        host.set_usage("m1", used());
+        host.set_usage("m2", used());
+        let (mut plugin, _) = Plugin::hello(host, &host.token(ID));
+        shown(host, "m1", 3, "art", json!({}), &control);
+        shown(host, "m2", 3, "art", json!({}), &other);
+        let key = key_at(host, "m1", 3);
+        plugin.receive_message();
+        plugin.receive_message();
+        plugin.send(json!({"type":"set_image","id":1,"key":key,"image":picture(72, image::ImageFormat::Png)}));
+        assert_eq!(reply_to(&mut plugin, 1)["ok"], true);
+        // Switched to Test: the plugin may no longer clear the key itself, so the app does, after its image.
+        host.set_usage("m1", None);
+        assert_eq!(
+            plugin.receive_message(),
+            json!({"type":"disappear","key":key})
+        );
+        wait_for("the images to be cleared", || {
+            sent.lock().unwrap().len() == 2
+        });
+        assert_eq!(
+            sent.lock().unwrap()[1],
+            json!({"type":"plugin_image_clear","plugin":ID})
+        );
+        // m2, which it never drew on, is not told; nor is m1 again when it leaves Live a second time.
+        host.set_usage("m2", None);
+        host.set_usage("m1", used());
+        host.set_usage("m1", None);
+        thread::sleep(Duration::from_millis(50));
+        assert!(untouched.lock().unwrap().is_empty());
+        assert_eq!(sent.lock().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn an_image_prepared_while_its_plugin_restarted_is_not_queued_after_the_clear() {
+        let rig = rig(&["/bin/sleep", "30"]);
+        let host = &rig.host;
+        let (control, sent) = run_control();
+        host.set_usage("m1", used());
+        let (plugin, _) = Plugin::hello(host, &host.token(ID));
+        shown(host, "m1", 3, "art", json!({}), &control);
+        let key = key_at(host, "m1", 3);
+        let stale = host.lock().instances[ID].conn.clone().unwrap();
+        drop(plugin);
+        wait_for("the restart", || host.state_of(ID) == Some("starting"));
+        let (_plugin, _) = Plugin::hello(host, &host.token(ID));
+        // What the old connection sent arrives now, as if it were prepared across the stop: refused, not queued.
+        let message = json!({"type":"set_image","id":1,"key":key,"image":picture(72, image::ImageFormat::Png)});
+        assert_eq!(
+            host.key_image(ID, &stale, &message, true).unwrap_err(),
+            "this plugin stopped while the image was prepared"
+        );
+        thread::sleep(Duration::from_millis(50));
+        assert!(sent.lock().unwrap().is_empty());
+        assert!(!host.keys().runs["m1"].drawn.contains(ID));
+    }
+
+    #[test]
+    fn a_plugin_draws_only_its_own_image_keys_with_72_pixel_pngs_and_jpegs() {
+        let rig = rig(&["/bin/sleep", "30"]);
+        let host = &rig.host;
+        let (control, sent) = run_control();
+        host.set_usage("m1", used());
+        let (mut plugin, _) = Plugin::hello(host, &host.token(ID));
+        shown(host, "m1", 3, "art", json!({"name":"x"}), &control);
+        let art = key_at(host, "m1", 3);
+        plugin.receive_message();
+        shown(host, "m1", 4, "set", json!({"entity":"a"}), &control);
+        let set = key_at(host, "m1", 4);
+        host.key(
+            "m1",
+            1,
+            &json!({"type":"plugin_key","state":"shown","page":"root","slot":5,"plugin":"com.example.other",
+                "action":"art","params":{},"control":{"module":"m4315","index":5}}),
+            Arc::clone(&control),
+        );
+        let other = key_at(host, "m1", 5);
+        shown(host, "m1", 7, "art", json!({"name":"x"}), &control);
+        let refusing = key_at(host, "m1", 7);
+        plugin.receive_message();
+        let png = picture(72, image::ImageFormat::Png);
+        let mut next = 0;
+        let mut send = |plugin: &mut Plugin, key: &str, image: Value| {
+            next += 1;
+            plugin.send(json!({"type":"set_image","id":next,"key":key,"image":image}));
+            reply_to(plugin, next)
+        };
+        let error = |reply: Value| -> String {
+            assert_eq!(reply["ok"], false, "{reply}");
+            reply["error"].as_str().unwrap().to_string()
+        };
+        assert!(error(send(&mut plugin, "k999", json!(png))).contains("unknown key k999"));
+        // Another plugin's key, and a key of an action without "image", which it was never told of: as unknown as an
+        // id that does not exist.
+        let unknown = |key: &str| format!("unknown key {key}: it is not a key of a module run now");
+        assert_eq!(
+            error(send(&mut plugin, &other, json!(png))),
+            unknown(&other)
+        );
+        assert_eq!(error(send(&mut plugin, &set, json!(png))), unknown(&set));
+        // So is a key of its own image action that it was never told of: here, one with a parameter its manifest does
+        // not declare, and one with a secret's value.
+        shown(host, "m1", 8, "art", json!({"x":1}), &control);
+        let undeclared = key_at(host, "m1", 8);
+        shown(host, "m1", 9, "art", json!({"pin":"1234"}), &control);
+        let secret = key_at(host, "m1", 9);
+        assert_eq!(
+            error(send(&mut plugin, &undeclared, json!(png))),
+            unknown(&undeclared)
+        );
+        plugin.send(json!({"type":"clear_image","id":400,"key":secret}));
+        assert_eq!(reply_to(&mut plugin, 400)["error"], unknown(&secret));
+        let big = base64::engine::general_purpose::STANDARD.encode(vec![0; MAX_IMAGE_BYTES + 1]);
+        assert_eq!(
+            error(send(&mut plugin, &art, json!(big))),
+            "the image is larger than 32 KiB"
+        );
+        assert_eq!(
+            error(send(
+                &mut plugin,
+                &art,
+                json!(picture(64, image::ImageFormat::Png))
+            )),
+            "the image is 64×64; a key image is 72×72"
+        );
+        let gif = base64::engine::general_purpose::STANDARD
+            .encode(b"GIF89a\x48\x00\x48\x00\x00\x00\x00;");
+        assert_eq!(
+            error(send(&mut plugin, &art, json!(gif))),
+            "the image is not a PNG or JPEG"
+        );
+        assert_eq!(
+            error(send(&mut plugin, &art, json!("not base64!"))),
+            "the image is not standard base64"
+        );
+        assert!(error(send(&mut plugin, &art, json!(null))).contains("has no image"));
+        // A truncated PNG: its header says 72×72, its pixels are missing.
+        let cut = base64::engine::general_purpose::STANDARD.encode(
+            &base64::engine::general_purpose::STANDARD
+                .decode(&png)
+                .unwrap()[..60],
+        );
+        assert!(error(send(&mut plugin, &art, json!(cut))).contains("could not be read"));
+        assert!(sent.lock().unwrap().is_empty());
+        // A PNG and a JPEG are taken, and the module gets its own baseline JPEG of each.
+        for image in [png.clone(), picture(72, image::ImageFormat::Jpeg)] {
+            assert_eq!(send(&mut plugin, &art, json!(image))["ok"], true);
+            let body = sent.lock().unwrap().pop().unwrap();
+            assert_eq!(body["type"], "plugin_image");
+            assert_eq!((&body["page"], &body["slot"]), (&json!("root"), &json!(3)));
+            let jpeg = base64::engine::general_purpose::STANDARD
+                .decode(body["jpeg"].as_str().unwrap())
+                .unwrap();
+            assert_eq!(
+                image::guess_format(&jpeg).unwrap(),
+                image::ImageFormat::Jpeg
+            );
+            assert_eq!(
+                image::ImageReader::with_format(Cursor::new(&jpeg), image::ImageFormat::Jpeg)
+                    .into_dimensions()
+                    .unwrap(),
+                (72, 72)
+            );
+            // Baseline (SOF0), never progressive (SOF2).
+            assert!(jpeg.windows(2).any(|marker| marker == [0xFF, 0xC0]));
+            assert!(!jpeg.windows(2).any(|marker| marker == [0xFF, 0xC2]));
+        }
+        // A hidden key of a Live run still takes one; the module keeps it for when its page opens.
+        hidden(host, "m1", 3, &control);
+        plugin.receive_message();
+        assert_eq!(send(&mut plugin, &art, json!(png))["ok"], true);
+        // The module's own refusal comes back in the reply.
+        assert_eq!(
+            error(send(&mut plugin, &refusing, json!(png))),
+            "this run does not draw keys"
+        );
+        plugin.send(json!({"type":"clear_image","id":500,"key":art}));
+        assert_eq!(reply_to(&mut plugin, 500)["ok"], true);
+        assert_eq!(
+            sent.lock().unwrap().last().unwrap().clone(),
+            json!({"type":"plugin_image_clear","page":"root","slot":3})
+        );
+        // Not on a Live run any more: refused.
+        host.set_usage("m1", None);
+        assert!(error(send(&mut plugin, &art, json!(png))).contains("not on a Live module run"));
+    }
+
+    #[test]
+    fn images_beyond_the_rate_limit_are_refused_and_counted_in_the_log() {
+        let rig = rig(&["/bin/sleep", "30"]);
+        let host = &rig.host;
+        let (control, sent) = run_control();
+        host.set_usage("m1", used());
+        let (mut plugin, _) = Plugin::hello(host, &host.token(ID));
+        shown(host, "m1", 3, "art", json!({}), &control);
+        let key = key_at(host, "m1", 3);
+        plugin.receive_message();
+        let png = picture(72, image::ImageFormat::Png);
+        let total = MAX_IMAGES_PER_SECOND as u64 + 5;
+        // set_image and clear_image count together.
+        for id in 1..=total {
+            if id % 3 == 0 {
+                plugin.send(json!({"type":"clear_image","id":id,"key":key}));
+            } else {
+                plugin.send(json!({"type":"set_image","id":id,"key":key,"image":png}));
+            }
+        }
+        let mut refused = 0;
+        let mut replies = 0;
+        while replies < total {
+            let message = plugin.receive_message();
+            if message["type"] != "reply" {
+                continue;
+            }
+            replies += 1;
+            if message["ok"] == false {
+                assert_eq!(
+                    message["error"],
+                    "at most 20 set_image and clear_image a second"
+                );
+                refused += 1;
+            }
+        }
+        assert_eq!(refused, 5);
+        assert_eq!(sent.lock().unwrap().len(), MAX_IMAGES_PER_SECOND);
+        for _ in 0..11 {
+            thread::sleep(Duration::from_millis(100));
+            plugin.send(json!({"type":"pong"}));
+        }
+        plugin.send(json!({"type":"set_image","id":99,"key":key,"image":png}));
+        assert_eq!(reply_to(&mut plugin, 99)["ok"], true);
+        assert_eq!(
+            host.statuses()[0].logs,
+            ["5 set_image and clear_image were refused: more than 20 a second"]
+        );
+    }
+
+    #[test]
+    fn one_plugin_waiting_on_a_run_does_not_hold_up_anothers_images() {
+        // A run that takes nothing until it is let go, and notes what it was handed.
+        let (release, released) = mpsc::channel::<()>();
+        let released = Mutex::new(released);
+        let taken = Arc::new(Mutex::new(Vec::<Value>::new()));
+        let noted = Arc::clone(&taken);
+        let control: RunControl = Arc::new(move |body| {
+            noted.lock().unwrap().push(body);
+            let _ = released.lock().unwrap().recv();
+            Ok(())
+        });
+        let mut run = KeyRun::default();
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        let conn = Arc::new(Conn::new(ours));
+        let queue = |run: &mut KeyRun, plugin: &str| {
+            PluginHost::queue_image(
+                run,
+                Arc::clone(&control),
+                plugin,
+                json!({"from": plugin}),
+                Some((Arc::clone(&conn), json!(1))),
+            )
+        };
+        for _ in 0..MAX_QUEUED_IMAGES {
+            queue(&mut run, "com.example.a").unwrap();
+        }
+        assert!(
+            queue(&mut run, "com.example.a")
+                .unwrap_err()
+                .contains("of this plugin's images")
+        );
+        wait_for("the first image to be taken", || {
+            taken.lock().unwrap().len() == 1
+        });
+        // Another plugin's request goes next, ahead of the first one's backlog; the app's own clear of the first
+        // plugin is never refused and goes after that plugin's images.
+        queue(&mut run, "com.example.b").unwrap();
+        let clear = json!({"type": "plugin_image_clear", "plugin": "com.example.a"});
+        PluginHost::queue_image(
+            &mut run,
+            Arc::clone(&control),
+            "com.example.a",
+            clear.clone(),
+            None,
+        )
+        .unwrap();
+        release.send(()).unwrap();
+        wait_for("the second image to be taken", || {
+            taken.lock().unwrap().len() == 2
+        });
+        assert_eq!(taken.lock().unwrap()[1], json!({"from": "com.example.b"}));
+        for _ in 0..MAX_QUEUED_IMAGES + 1 {
+            release.send(()).unwrap();
+        }
+        wait_for("the run to catch up", || {
+            run.waiting
+                .values()
+                .all(|waiting| waiting.load(Ordering::SeqCst) == 0)
+                && taken.lock().unwrap().len() == MAX_QUEUED_IMAGES + 2
+        });
+        assert_eq!(taken.lock().unwrap().last(), Some(&clear));
+        queue(&mut run, "com.example.a").unwrap();
+        release.send(()).unwrap();
+        drop(theirs);
+    }
+
+    #[test]
+    fn a_plugin_that_stops_has_its_images_cleared_and_hears_of_its_keys_again_after_its_restart() {
+        let rig = rig(&["/bin/sleep", "30"]);
+        let host = &rig.host;
+        let (control, sent) = run_control();
+        let (other, untouched) = run_control();
+        host.set_usage("m1", used());
+        host.set_usage("m2", used());
+        let (mut plugin, _) = Plugin::hello(host, &host.token(ID));
+        shown(host, "m1", 3, "art", json!({"name":"x"}), &control);
+        shown(host, "m2", 3, "art", json!({"name":"x"}), &other);
+        let key = key_at(host, "m1", 3);
+        assert_eq!(plugin.receive_message(), appear(&key, 3));
+        plugin.receive_message();
+        plugin.send(json!({"type":"set_image","id":1,"key":key,"image":picture(72, image::ImageFormat::Png)}));
+        assert_eq!(reply_to(&mut plugin, 1)["ok"], true);
+        drop(plugin);
+        // Only the run it drew on is told to clear its images, after the image it took.
+        wait_for("the images to be cleared", || {
+            sent.lock().unwrap().len() == 2
+        });
+        assert_eq!(
+            sent.lock().unwrap()[1],
+            json!({"type":"plugin_image_clear","plugin":ID})
+        );
+        assert!(untouched.lock().unwrap().is_empty());
+        wait_for("the restart", || host.state_of(ID) == Some("starting"));
+        let (mut plugin, welcome) = Plugin::hello(host, &host.token(ID));
+        assert_eq!(welcome["type"], "welcome");
+        // The new process hears of every key of its own on screen, with the ids they had.
+        let mut told = [plugin.receive_message(), plugin.receive_message()];
+        told.sort_by_key(|message| message["key"].as_str().unwrap().to_string());
+        assert_eq!(told[0]["type"], "appear");
+        assert_eq!(told[1]["type"], "appear");
+        assert!(told.iter().any(|message| *message == appear(&key, 3)));
+        // No image since its restart: a stop clears nothing more.
+        drop(plugin);
+        wait_for("the restart", || host.state_of(ID) == Some("restarting"));
+        assert_eq!(sent.lock().unwrap().len(), 2);
+    }
+
     #[test]
     fn a_plugin_sets_only_the_variables_its_manifest_lists() {
         let rig = rig(&["/bin/sleep", "30"]);
@@ -2890,6 +4135,43 @@ mod tests {
                 .iter()
                 .any(|line| line.starts_with("held for ") && line.ends_with(" s"))
         });
+        // Counter: draws its count on its key as soon as the key is on screen, and again after each press.
+        let (control, sent) = run_control();
+        host.key(
+            "m1",
+            1,
+            &json!({"type":"plugin_key","state":"shown","page":"root","slot":2,"plugin":"com.example.notify",
+                "min_version":"1.0.0","action":"counter","params":{},"control":{"module":"m4315","index":2}}),
+            Arc::clone(&control),
+        );
+        wait_for("the first image", || sent.lock().unwrap().len() == 1);
+        let (sender, pressed) = mpsc::channel();
+        host.invoke(
+            "m1",
+            &json!({"plugin":"com.example.notify","min_version":"1.0.0","action":"counter","params":{}}),
+            Box::new(move |result| {
+                let _ = sender.send(result);
+            }),
+        );
+        assert_eq!(answer(&pressed), Ok(()));
+        wait_for("the second image", || sent.lock().unwrap().len() == 2);
+        let images = sent.lock().unwrap().clone();
+        for body in &images {
+            assert_eq!(body["type"], "plugin_image");
+            assert_eq!(body["slot"], 2);
+        }
+        assert_ne!(
+            images[0]["jpeg"], images[1]["jpeg"],
+            "0 and 1 look the same"
+        );
+        assert!(
+            !host.statuses()[0]
+                .logs
+                .iter()
+                .any(|line| line.contains("refused")),
+            "{:?}",
+            host.statuses()[0].logs
+        );
         host.stop_all();
     }
 

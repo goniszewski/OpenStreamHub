@@ -79,7 +79,8 @@ fn module_key(module: ServiceModule) -> &'static str {
 }
 
 /// The USB port chain of a macOS location ID: the ports below the bus, without the trailing zeros.
-pub fn port_chain(location_id: u32) -> Vec<u8> {
+#[cfg(any(target_os = "macos", test))]
+pub fn location_id_chain(location_id: u32) -> Vec<u8> {
     let mut ports: Vec<u8> = (0..6)
         .map(|index| ((location_id >> (20 - 4 * index)) & 0x0f) as u8)
         .collect();
@@ -264,7 +265,11 @@ mod tests {
 
     #[test]
     fn a_location_id_reads_as_its_port_chain() {
-        assert_eq!(port_chain(0x0211_2300), vec![1, 1, 2, 3]);
-        assert_eq!(chain_text(&port_chain(0x0211_1110)), "1.1.1.1.1");
+        assert_eq!(location_id_chain(0x0211_2300), vec![1, 1, 2, 3]);
+        assert_eq!(chain_text(&location_id_chain(0x0211_1110)), "1.1.1.1.1");
+        // The base at 1.1.1.4.4 and another host port: the bus byte is dropped.
+        assert_eq!(location_id_chain(0x0211_1440), vec![1, 1, 1, 4, 4]);
+        assert_eq!(location_id_chain(0x0221_2300), vec![2, 1, 2, 3]);
+        assert_eq!(location_id_chain(0x0211_9900), vec![1, 1, 9, 9]);
     }
 }

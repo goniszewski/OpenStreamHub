@@ -185,12 +185,14 @@ function PluginParamField({ id, param, value, issue, onChange }: {
 // what the plugin will draw, so the key shows its own face here, as it does in Test, before the plugin's first image
 // and after the plugin stops. With a binding for one device's serial, which binding a module runs depends on its
 // serial (an exact one hides a wildcard), so the line says the plugin may draw the key when any binding would.
-export function PluginKeyNote({ bindings }: { bindings: { serial_number?: string; action: BindingAction }[] }) {
+// On a dial function (`dial`), the same line about the dial screen while that function is current.
+export function PluginKeyNote({ bindings, dial = false }: { bindings: { serial_number?: string; action: BindingAction }[]; dial?: boolean }) {
   const t = useT();
   const { listing } = usePlugins();
   if (bindings.some(binding => binding.serial_number)) {
     return bindings.some(binding => pluginDrawsKey(listing, binding.action))
-      ? <p className="fine-print plugin-draws-key">{t('inspector.pluginMayDrawKey')}</p> : null;
+      ? <p className="fine-print plugin-draws-key">{t(dial ? 'inspector.pluginMayDrawDial' : 'inspector.pluginMayDrawKey')}</p> : null;
   }
-  return pluginDrawsKey(listing, bindings[0]?.action) ? <p className="fine-print plugin-draws-key">{t('inspector.pluginDrawsKey')}</p> : null;
+  return pluginDrawsKey(listing, bindings[0]?.action)
+    ? <p className="fine-print plugin-draws-key">{t(dial ? 'inspector.pluginDrawsDial' : 'inspector.pluginDrawsKey')}</p> : null;
 }

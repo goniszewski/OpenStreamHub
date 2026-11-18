@@ -809,7 +809,7 @@ fn owning_plugin_actions<'a>(
 
 /// Whether `binding` (gesture, serial, action), one of `bindings`, applies to a device with `serial`: an exact
 /// serial's, or a wildcard's for a gesture without one.
-fn applies<'a>(
+pub(crate) fn applies<'a>(
     mut bindings: impl Iterator<Item = (Gesture, Option<&'a str>, &'a Action)>,
     serial: Option<&str>,
     (bound, selector, _): &(Gesture, Option<&str>, &Action),

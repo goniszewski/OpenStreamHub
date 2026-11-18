@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { ArrowDown, ArrowUp, ChevronDown, ChevronRight, Play, Plus, Trash2, TriangleAlert } from 'lucide-react';
 import { ActionFields } from './ActionFields';
+import { PluginKeyNote } from './PluginFields';
 import type { Action, Binding, DialBinding, DialFunction, Profile, ReplayEvent } from './contracts';
 import { useObsCatalog } from './obs-catalog';
 import type { ObsCatalogStore } from './obs-catalog';
@@ -138,6 +139,7 @@ export function DialFunctionsPanel({ profile, session, state, disabled, initialS
         <div className="dial-gesture-row"><div><strong>Short press</strong><span className="muted">Switches function; cannot be bound</span></div>{playButton('short_press', 'Short press')}</div>
       </li>
     </ul>
+    <PluginKeyNote bindings={current.bindings} dial />
     {previewed === selected && state.preview.status !== 'idle' && <p role={state.preview.status === 'failed' ? 'alert' : 'status'} className="fine-print">
       {state.preview.status === 'running' ? 'Resolving…' : state.preview.status === 'failed' ? state.preview.error : dialPreviewText(state.preview.event, current.name)}
     </p>}

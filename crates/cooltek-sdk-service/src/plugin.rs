@@ -358,14 +358,17 @@ impl PluginInput {
     }
 }
 
-/// One M4315 key a plugin draws, as the `plugin_key` records that say it is shown or hidden describe it: the page
-/// and wire slot that identify it in the run, and the action that draws it with its parameters as they were filled
-/// in when it was shown.
+/// One M4315 key or M131E dial screen a plugin draws, as the `plugin_key` records that say it is shown or hidden
+/// describe it: the page and wire slot that identify it in the run, and the action that draws it with its parameters
+/// as they were filled in when it was shown. On the dial the page names the dial function (`function:<index>`, or
+/// `dial` without functions) and the slot is 0.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PluginKey {
-    /// The keypad page the key is on.
+    /// The module drawn on: M4315 or M131E.
+    pub module: ServiceModule,
+    /// The keypad page the key is on, or the dial function.
     pub page: String,
-    /// Wire index of the key, 0 through 14.
+    /// Wire index of the key, 0 through 14; 0 on the dial.
     pub slot: u8,
     /// The plugin's reverse-DNS id.
     pub plugin: String,
@@ -392,7 +395,7 @@ impl PluginKey {
             "action": self.action,
             "params": self.params,
             "variables": self.variables,
-            "control": {"module": ServiceModule::M4315, "index": self.slot},
+            "control": {"module": self.module, "index": self.slot},
         })
     }
 }
@@ -827,6 +830,7 @@ mod tests {
         );
         assert!(sent.lock().unwrap()[1].get("input").is_none());
         let key = PluginKey {
+            module: ServiceModule::M4315,
             page: "root".into(),
             slot: 3,
             plugin: "com.x.y".into(),

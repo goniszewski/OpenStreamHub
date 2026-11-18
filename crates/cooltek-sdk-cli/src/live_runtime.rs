@@ -195,6 +195,8 @@ pub const DIAL_MIN_INTERVAL: Duration = Duration::from_secs(1);
 pub const DIAL_ANIMATION_INTERVAL: Duration = Duration::from_millis(150);
 /// Trigger of a dial write started by an animation frame coming due.
 const DIAL_ANIMATION_TRIGGER: &str = "animation";
+/// Trigger of a dial write started by a plugin's new picture.
+const DIAL_PLUGIN_TRIGGER: &str = "plugin";
 /// How long a failed animation frame holds the animation back before the next
 /// try, so a failing dial logs once in a while instead of at every frame.
 const DIAL_ANIMATION_RETRY: Duration = Duration::from_secs(5);
@@ -285,9 +287,10 @@ impl LiveDisplay {
         self
     }
 
-    /// Writes `plugin_key` records as the drawn page changes, and redraws the page whenever a plugin's image
-    /// changes; only keys whose picture changed are written. Pass the keys whose table the key artwork's
-    /// `PluginImages` reads. At run end every shown key is reported hidden before `service_end`. Keys displays only.
+    /// Writes `plugin_key` records as the drawn page (or dial function) changes, and redraws the page whenever a
+    /// plugin's image changes; only keys whose picture changed are written. Pass the keys whose table the key
+    /// artwork's `PluginImages` reads, or, for a dial, the table given to `DialArtwork::with_plugin_images`. At run
+    /// end every shown key is reported hidden before `service_end`.
     pub fn with_plugin_keys(mut self, keys: PluginKeys) -> Self {
         self.plugin_keys = Some(keys);
         self
@@ -704,6 +707,8 @@ impl DisplayThread {
                         let mut dial = DialState::default();
                         let closed =
                             || gate_closed.load(Ordering::SeqCst) || abort.load(Ordering::SeqCst);
+                        // The dial function to report to the app as shown, from the newest request.
+                        let mut show = None;
                         loop {
                             match next_display_request(
                                 &thread_slot,
@@ -712,7 +717,14 @@ impl DisplayThread {
                                 &|| None,
                             ) {
                                 Wake::Stopped => return,
-                                Wake::Request(request) => dial.requested(request),
+                                Wake::Request(request) => {
+                                    if plugin_keys.is_some() {
+                                        show = Some(crate::plugin_image::dial_page(
+                                            request.dial_function,
+                                        ));
+                                    }
+                                    dial.requested(request)
+                                }
                                 Wake::Tick | Wake::Changed(_) => {}
                             }
                             // Choosing the face (reading the clock or sampling the
@@ -720,6 +732,12 @@ impl DisplayThread {
                             let mut attempted = None;
                             let attempt =
                                 std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                    // Before the face is chosen, so the plugin hears of the function
+                                    // first, and inside the guard, so a panic disables the display as
+                                    // a sync's does.
+                                    if let (Some(keys), Some(page)) = (&plugin_keys, show.take()) {
+                                        keys.show_page(&page);
+                                    }
                                     let (request, trigger) =
                                         dial.due(&artwork, min_interval, &closed)?;
                                     attempted = Some((request.clone(), trigger));
@@ -747,6 +765,17 @@ impl DisplayThread {
                                 };
                                 (request, "panic")
                             });
+                            // A clean plugin redraw is not logged, as on keys: a plugin may
+                            // send a picture every second.
+                            if trigger == DIAL_PLUGIN_TRIGGER
+                                && outcome == DialOutcome::Done
+                                && record.as_ref().is_ok_and(|(record, _)| {
+                                    record["error"].is_null() && record["complete"] == true
+                                })
+                            {
+                                dial.finished(outcome);
+                                continue;
+                            }
                             // Clean animation frames are counted in `syncs` and mostly
                             // not logged: at five a second they would flood the log.
                             if trigger == DIAL_ANIMATION_TRIGGER
@@ -1034,8 +1063,15 @@ impl DialState {
         let Some(until_frame) = artwork.next_frame_in() else {
             return DIAL_TICK;
         };
-        let pending =
-            self.last_face.as_ref() != Some(&artwork.request(self.dial_function).function);
+        let face = artwork.request(self.dial_function).function;
+        // A plugin's picture covers the animation: nothing comes due with its frames.
+        if face
+            .as_deref()
+            .is_some_and(|face| face.starts_with("plugin:"))
+        {
+            return DIAL_TICK;
+        }
+        let pending = self.last_face.as_ref() != Some(&face);
         let wait = if pending {
             let interval = dial_interval(artwork, min_interval);
             self.last_attempt.map_or(Duration::ZERO, |last| {
@@ -1080,8 +1116,12 @@ impl DialState {
             return None;
         }
         let request = artwork.request(self.dial_function);
+        let plugin = request
+            .function
+            .as_deref()
+            .is_some_and(|face| face.starts_with("plugin:"));
         // A CPU baseline alone would only draw `--`; wait for the next sample.
-        if artwork.awaiting_first_sample() {
+        if artwork.awaiting_first_sample() && !plugin {
             return None;
         }
         let animation = request
@@ -1095,7 +1135,13 @@ impl DialState {
         if animation && self.animation_paused() && self.trigger.is_none() {
             return None;
         }
-        let min_interval = dial_interval(artwork, min_interval);
+        // A plugin's picture is held to the plain interval, also over an animation, whose
+        // floor was sized for its own frames.
+        let min_interval = if plugin {
+            min_interval
+        } else {
+            dial_interval(artwork, min_interval)
+        };
         if self
             .last_attempt
             .is_some_and(|last| last.elapsed() < min_interval)
@@ -1103,6 +1149,11 @@ impl DialState {
             return None;
         }
         let face = Some(request.function.clone());
+        // A plugin's picture just went: the content's face is back because of it.
+        let after_plugin = self.last_face.as_ref().is_some_and(|last| {
+            last.as_deref()
+                .is_some_and(|last| last.starts_with("plugin:"))
+        });
         if self.retried != face {
             self.retried = None;
         }
@@ -1111,7 +1162,7 @@ impl DialState {
         self.last_attempt = Some(attempt_anchor(
             Instant::now(),
             animation.then(|| artwork.frame_age()).flatten(),
-            dial_interval(artwork, min_interval),
+            min_interval,
         ));
         self.last_was_animation = animation;
         // What changes a face without a request: the clock's minute or a new
@@ -1129,6 +1180,8 @@ impl DialState {
             // In clock and CPU modes a function switch changes nothing; time did.
             (Some("dial_function") | None, Some(timed)) => timed,
             (Some(trigger), _) => trigger,
+            // A plugin's new picture.
+            (None, None) if plugin || after_plugin => DIAL_PLUGIN_TRIGGER,
             (None, None) => "clock",
         };
         Some((request, trigger))
@@ -7086,6 +7139,85 @@ mod tests {
                 DialOutcome::Done
             ]
         );
+    }
+
+    #[test]
+    fn a_plugins_dial_function_is_shown_to_the_app_and_draws_the_plugins_picture() {
+        use base64::Engine as _;
+        let session = dial_functions_profile(
+            r#"[
+            {"name":"Meter","bindings":[{"gesture":"right","action":{"type":"plugin","plugin":"com.x.y",
+                "min_version":"1.0.0","action":"meter","params":{}}}]},
+            {"name":"Fine","bindings":[{"gesture":"right","action":{"type":"volume","delta":1}}]}
+        ]"#,
+        );
+        let sent = Arc::new(Mutex::new(Vec::<Value>::new()));
+        let log = Arc::clone(&sent);
+        let table = crate::plugin_image::PluginImageTable::default();
+        let keys = PluginKeys::dial(
+            session.profile(),
+            DeviceContext {
+                module: ServiceModule::M131E,
+                serial_number: None,
+            },
+            table.clone(),
+            cooltek_sdk_service::PluginBridge::new(Box::new(move |record| {
+                log.lock().unwrap().push(record.clone());
+                Ok(())
+            })),
+            cooltek_sdk_service::SharedVariables::new(),
+        );
+        let clock = ManualClock::new(WallTime::new(9, 0));
+        let expected = DialArtwork::prepare(
+            DialContent::Function,
+            session.profile(),
+            Box::new(clock.clone()),
+        )
+        .unwrap();
+        let artwork =
+            DialArtwork::prepare(DialContent::Function, session.profile(), Box::new(clock))
+                .unwrap()
+                .with_plugin_images(table);
+        let harness = dial_harness(artwork, Duration::from_millis(20), None);
+        let (records_tx, records_rx) = mpsc::sync_channel(DISPLAY_RECORD_QUEUE);
+        let display = DisplayThread::spawn(
+            harness.display.with_plugin_keys(keys.clone()),
+            session.clone(),
+            Arc::new(AtomicBool::new(false)),
+            records_tx,
+        )
+        .unwrap();
+        display.request(&session, "software_mode");
+        assert!(wait_until(|| written(&harness.fake) == 1));
+        // Until the plugin draws, the function's own face.
+        assert_eq!(
+            dial_writes(&harness.fake),
+            vec![expected.function_face(0).unwrap().to_vec()]
+        );
+        {
+            let sent = sent.lock().unwrap();
+            assert_eq!(sent.len(), 1);
+            assert_eq!(sent[0]["state"], "shown");
+            assert_eq!(sent[0]["page"], "function:0");
+            assert_eq!(sent[0]["control"], json!({"module": "m131e", "index": 0}));
+        }
+        let mut picture = image::RgbImage::new(240, 240);
+        picture.put_pixel(10, 10, image::Rgb([255, 255, 255]));
+        let jpeg = crate::dial_artwork::encode(&picture).unwrap();
+        keys.set_image(
+            "function:0",
+            0,
+            &base64::engine::general_purpose::STANDARD.encode(&jpeg),
+        )
+        .unwrap();
+        assert!(wait_until(|| written(&harness.fake) == 2));
+        assert_eq!(dial_writes(&harness.fake)[1], jpeg);
+        display.stop();
+        // The plugin's clean redraw is counted but not logged.
+        let records: Vec<Value> = records_rx.try_iter().collect();
+        assert_eq!(records.len(), 1, "{records:?}");
+        assert_eq!(records[0]["face"], "function:0");
+        assert_eq!(display.counts.syncs.load(Ordering::SeqCst), 2);
     }
 
     #[test]

@@ -1,7 +1,9 @@
-//! The pictures plugins draw on M4315 keys (step 4c of `docs/plugins-design.md`).
+//! The pictures plugins draw on M4315 keys (step 4c of `docs/plugins-design.md`) and on the M131E dial screen.
 //!
 //! A keypad action tile is a plugin's to draw while its first binding runs a plugin action directly
-//! ([`cooltek_sdk_service::KeypadTile::plugin_drawer`]). The display thread tells the app which of those keys are on
+//! ([`cooltek_sdk_service::KeypadTile::plugin_drawer`]), and the dial screen while the current dial function's first
+//! binding does ([`cooltek_sdk_service::Profile::dial_plugin_drawer`]); a dial is one key, slot 0 of the page that
+//! names its function ([`dial_page`]). The display thread tells the app which of those keys are on
 //! screen with `plugin_key` records (`shown`, `hidden`) as the drawn page changes, and the app hands back prepared
 //! images on the control channel (`plugin_image`, `plugin_image_clear`). [`PluginImageTable`] is the small table
 //! between the control channel and the display thread, as [`crate::timer_face::TimerFaces`] is for countdowns: a
@@ -18,19 +20,45 @@ use std::{
 };
 
 use base64::{Engine, engine::general_purpose::STANDARD};
-use cooltek_sdk_masterhub::keypad;
+use cooltek_sdk_masterhub::{dial, keypad};
 use cooltek_sdk_service::{
-    Action, DeviceContext, KeypadLayout, PluginBridge, PluginKey, Profile, SharedVariables,
+    Action, DeviceContext, KeypadLayout, PluginBridge, PluginKey, Profile, ServiceModule,
+    SharedVariables,
     display_sync::{KeyContent, KeyImageProvider, KeyImageRequest},
     plugin::fill_in_plugin_params,
 };
 use image::{ImageDecoder, codecs::jpeg::JpegDecoder};
 
-/// Largest plugin image accepted, decoded.
+/// Largest plugin key image accepted, decoded.
 pub const MAX_PLUGIN_IMAGE_BYTES: usize = 32 * 1024;
+/// Largest plugin dial image accepted, decoded: well under the 64 KiB a control line may carry once encoded.
+pub const MAX_PLUGIN_DIAL_IMAGE_BYTES: usize = 40 * 1024;
 
-/// Per (page, slot): the plugin that drew the image and its prepared JPEG.
-type Images = HashMap<(String, u8), (String, Vec<u8>)>;
+/// The page of the dial's one key while the dial function at `function` is current: `function:<index>`, or `dial`
+/// for a profile without dial functions.
+pub fn dial_page(function: Option<usize>) -> String {
+    match function {
+        Some(index) => format!("function:{index}"),
+        None => "dial".into(),
+    }
+}
+
+/// The dial function a dial page names (`None` for `dial`), or why it names none.
+fn dial_function_of(page: &str) -> Result<Option<usize>, String> {
+    if page == "dial" {
+        return Ok(None);
+    }
+    page.strip_prefix("function:")
+        .filter(|index| !index.starts_with('+') && (index.len() == 1 || !index.starts_with('0')))
+        .and_then(|index| index.parse().ok())
+        .map(Some)
+        .ok_or_else(|| {
+            format!("{page:?} is not a dial page: they are \"dial\" and \"function:<index>\"")
+        })
+}
+
+/// Per (page, slot): the plugin that drew the image, its prepared JPEG, and the table's version when it was kept.
+type Images = HashMap<(String, u8), (String, Vec<u8>, u64)>;
 
 #[derive(Default)]
 struct TableShared {
@@ -55,10 +83,13 @@ impl PluginImageTable {
     /// Keeps `jpeg` as the picture `plugin` draws on `slot` of `page`.
     pub fn set(&self, page: &str, slot: u8, plugin: &str, jpeg: Vec<u8>) {
         let mut images = self.images();
-        let entry = (plugin.to_string(), jpeg);
-        if images.get(&(page.to_string(), slot)) != Some(&entry) {
-            images.insert((page.to_string(), slot), entry);
-            self.shared.version.fetch_add(1, Ordering::SeqCst);
+        let key = (page.to_string(), slot);
+        if images
+            .get(&key)
+            .is_none_or(|(kept, bytes, _)| kept != plugin || *bytes != jpeg)
+        {
+            let version = self.shared.version.fetch_add(1, Ordering::SeqCst) + 1;
+            images.insert(key, (plugin.to_string(), jpeg, version));
         }
     }
 
@@ -66,7 +97,32 @@ impl PluginImageTable {
     pub fn get(&self, page: &str, slot: u8) -> Option<Vec<u8>> {
         self.images()
             .get(&(page.to_string(), slot))
-            .map(|(_, jpeg)| jpeg.clone())
+            .map(|(_, jpeg, _)| jpeg.clone())
+    }
+
+    /// Which picture a plugin drew on `slot` of `page`, if any: a number that changes whenever the picture does.
+    pub fn generation(&self, page: &str, slot: u8) -> Option<u64> {
+        self.images()
+            .get(&(page.to_string(), slot))
+            .map(|(_, _, generation)| *generation)
+    }
+
+    /// The picture a plugin drew on `slot` of `page` with its generation, read together; the bytes only when the
+    /// generation is not `known`.
+    pub fn entry(
+        &self,
+        page: &str,
+        slot: u8,
+        known: Option<u64>,
+    ) -> Option<(u64, Option<Vec<u8>>)> {
+        self.images()
+            .get(&(page.to_string(), slot))
+            .map(|(_, jpeg, generation)| {
+                (
+                    *generation,
+                    (Some(*generation) != known).then(|| jpeg.clone()),
+                )
+            })
     }
 
     /// Forgets every image for which `drop` holds, given its page, slot and plugin. Wakes the display thread only
@@ -74,7 +130,7 @@ impl PluginImageTable {
     pub fn clear(&self, drop: impl Fn(&str, u8, &str) -> bool) {
         let mut images = self.images();
         let before = images.len();
-        images.retain(|(page, slot), (plugin, _)| !drop(page, *slot, plugin));
+        images.retain(|(page, slot), (plugin, _, _)| !drop(page, *slot, plugin));
         if images.len() != before {
             self.shared.version.fetch_add(1, Ordering::SeqCst);
         }
@@ -137,6 +193,32 @@ pub fn decode_plugin_image(base64: &str) -> Result<Vec<u8>, String> {
     Ok(jpeg)
 }
 
+/// Checks a plugin dial image as standard base64 of a 240×240 baseline JFIF of at most
+/// [`MAX_PLUGIN_DIAL_IMAGE_BYTES`], with its pixels decoded, and returns its bytes.
+pub fn decode_plugin_dial_image(base64: &str) -> Result<Vec<u8>, String> {
+    let too_big = || "the plugin image is larger than 40 KiB".to_string();
+    if base64.len() > MAX_PLUGIN_DIAL_IMAGE_BYTES.div_ceil(3) * 4 {
+        return Err(too_big());
+    }
+    let jpeg = STANDARD
+        .decode(base64)
+        .map_err(|_| "the plugin image is not valid base64".to_string())?;
+    if jpeg.len() > MAX_PLUGIN_DIAL_IMAGE_BYTES {
+        return Err(too_big());
+    }
+    dial::validate_jpeg(&jpeg)
+        .map_err(|error| format!("the plugin image is not a dial image: {error}"))?;
+    let side = u32::from(dial::IMAGE_WIDTH);
+    let decoder = JpegDecoder::new(Cursor::new(&jpeg))
+        .map_err(|error| format!("the plugin image is not a dial image: {error}"))?;
+    if decoder.dimensions() != (side, side) || decoder.total_bytes() > u64::from(side * side * 4) {
+        return Err("the plugin image must be 240×240 pixels".into());
+    }
+    image::DynamicImage::from_decoder(decoder)
+        .map_err(|error| format!("the plugin image's pixels do not decode: {error}"))?;
+    Ok(jpeg)
+}
+
 /// The keys on screen, as last told to the app.
 #[derive(Default)]
 struct Shown {
@@ -146,8 +228,15 @@ struct Shown {
     closed: bool,
 }
 
+/// What a run draws for plugins: keypad pages, or the dial screen.
+enum Surface {
+    Keypad(KeypadLayout),
+    /// The profile, for its dial functions or M131E bindings.
+    Dial(Box<Profile>),
+}
+
 struct KeysShared {
-    layout: KeypadLayout,
+    surface: Surface,
     device: DeviceContext,
     table: PluginImageTable,
     bridge: PluginBridge,
@@ -155,9 +244,9 @@ struct KeysShared {
     shown: Mutex<Shown>,
 }
 
-/// The keys plugins draw in one keypad run that draws its keys: which tiles are a plugin's, the images they drew,
-/// and which are on screen. The control channel takes images through it, and the display thread tells it which page
-/// it draws. Cloning shares it.
+/// The keys plugins draw in one keypad run that draws its keys, or the dial screen of one dial run that draws it:
+/// which are a plugin's, the images they drew, and which are on screen. The control channel takes images through it,
+/// and the display thread tells it which page (or dial function) it draws. Cloning shares it.
 #[derive(Clone)]
 pub struct PluginKeys {
     shared: Arc<KeysShared>,
@@ -173,16 +262,50 @@ impl PluginKeys {
         bridge: PluginBridge,
         variables: SharedVariables,
     ) -> Option<Self> {
-        Some(Self {
+        Some(Self::with_surface(
+            Surface::Keypad(profile.keypad.clone()?),
+            device,
+            table,
+            bridge,
+            variables,
+        ))
+    }
+
+    /// For the dial screen of `profile` on `device`, as [`Self::new`] is for keys. The dial's one key is slot 0 of
+    /// [`dial_page`] for the current function.
+    pub fn dial(
+        profile: &Profile,
+        device: DeviceContext,
+        table: PluginImageTable,
+        bridge: PluginBridge,
+        variables: SharedVariables,
+    ) -> Self {
+        Self::with_surface(
+            Surface::Dial(Box::new(profile.clone())),
+            device,
+            table,
+            bridge,
+            variables,
+        )
+    }
+
+    fn with_surface(
+        surface: Surface,
+        device: DeviceContext,
+        table: PluginImageTable,
+        bridge: PluginBridge,
+        variables: SharedVariables,
+    ) -> Self {
+        Self {
             shared: Arc::new(KeysShared {
-                layout: profile.keypad.clone()?,
+                surface,
                 device,
                 table,
                 bridge,
                 variables,
                 shown: Mutex::new(Shown::default()),
             }),
-        })
+        }
     }
 
     /// The table the display draws from.
@@ -199,7 +322,34 @@ impl PluginKeys {
 
     /// The plugin action that draws `slot` of `page`, or why there is none.
     fn drawer(&self, page: &str, slot: u8) -> Result<&Action, String> {
-        let layout = &self.shared.layout;
+        let layout = match &self.shared.surface {
+            Surface::Keypad(layout) => layout,
+            Surface::Dial(profile) => {
+                let function = dial_function_of(page)?;
+                if slot != 0 {
+                    return Err(format!("slot {slot} is not the dial: the dial is slot 0"));
+                }
+                if function.is_some() != profile.dial_functions.is_some() {
+                    return Err(match function {
+                        Some(_) => format!("the profile has no dial function {page:?}"),
+                        None => "the profile has dial functions: name one".into(),
+                    });
+                }
+                return profile
+                    .dial_plugin_drawer(function, &self.shared.device)
+                    .ok_or_else(|| match function {
+                        Some(index)
+                            if profile
+                                .dial_functions
+                                .as_ref()
+                                .is_some_and(|f| index >= f.len()) =>
+                        {
+                            format!("the profile has no dial function {page:?}")
+                        }
+                        _ => format!("the dial on {page:?} is not drawn by a plugin"),
+                    });
+            }
+        };
         let found = layout
             .page(page)
             .ok_or_else(|| format!("the profile has no keypad page {page:?}"))?;
@@ -212,13 +362,17 @@ impl PluginKeys {
             .ok_or_else(|| format!("key {slot} on page {page:?} is not drawn by a plugin"))
     }
 
-    /// Keeps the image (standard base64 of a 72×72 baseline JFIF) the plugin that draws `slot` of `page` sent, and
-    /// redraws the key if it is on screen. A key of another page is kept for when its page opens.
+    /// Keeps the image (standard base64 of a 72×72 baseline JFIF, 240×240 on the dial) the plugin that draws `slot`
+    /// of `page` sent, and redraws the key if it is on screen. A key of another page (or dial function) is kept for
+    /// when its page opens.
     pub fn set_image(&self, page: &str, slot: u8, base64: &str) -> Result<(), String> {
         let Action::Plugin { plugin, .. } = self.drawer(page, slot)? else {
             unreachable!("a drawer is a plugin action");
         };
-        let jpeg = decode_plugin_image(base64)?;
+        let jpeg = match self.shared.surface {
+            Surface::Keypad(_) => decode_plugin_image(base64)?,
+            Surface::Dial(_) => decode_plugin_dial_image(base64)?,
+        };
         // Held while it is kept, so an image never outlives `end`, which empties the table.
         let shown = self.shown();
         if shown.closed {
@@ -258,9 +412,19 @@ impl PluginKeys {
     /// filled in (a value breaks the size or one-line rules) is left out, as an event would be.
     fn keys_of(&self, page: &str) -> Vec<PluginKey> {
         let shared = &self.shared;
-        shared
-            .layout
-            .plugin_keys(page, &shared.device)
+        let (module, drawn) = match &shared.surface {
+            Surface::Keypad(layout) => (
+                ServiceModule::M4315,
+                layout.plugin_keys(page, &shared.device),
+            ),
+            Surface::Dial(_) => (
+                ServiceModule::M131E,
+                self.drawer(page, 0)
+                    .map(|action| vec![(0, action)])
+                    .unwrap_or_default(),
+            ),
+        };
+        drawn
             .into_iter()
             .filter_map(|(slot, action)| {
                 let Action::Plugin {
@@ -282,6 +446,7 @@ impl PluginKeys {
                         .ok()?
                 };
                 Some(PluginKey {
+                    module,
                     page: page.to_string(),
                     slot,
                     plugin: plugin.clone(),
@@ -294,9 +459,9 @@ impl PluginKeys {
             .collect()
     }
 
-    /// Says `page` is the page drawn now: when it is another than before, `hidden` for each key of the old page and
-    /// then `shown` for each key of the new one. Keys of different pages are different keys, even in the same slot.
-    /// Does nothing once the run ended.
+    /// Says `page` is the page drawn now (on the dial, [`dial_page`] of the current function): when it is another
+    /// than before, `hidden` for each key of the old page and then `shown` for each key of the new one. Keys of
+    /// different pages are different keys, even in the same slot. Does nothing once the run ended.
     pub fn show_page(&self, page: &str) {
         let mut shown = self.shown();
         if shown.closed || shown.page.as_deref() == Some(page) {
@@ -458,6 +623,134 @@ mod tests {
             "the run has ended"
         );
         assert!(keys.table().get("root", 3).is_none());
+    }
+
+    fn dial_keys(profile: Value) -> (PluginKeys, Arc<Mutex<Vec<Value>>>) {
+        let profile = Profile::from_json(profile.to_string().as_bytes()).unwrap();
+        let sent = Arc::new(Mutex::new(Vec::new()));
+        let log = Arc::clone(&sent);
+        let bridge = PluginBridge::new(Box::new(move |record| {
+            log.lock().unwrap().push(record.clone());
+            Ok(())
+        }));
+        let device = DeviceContext {
+            module: ServiceModule::M131E,
+            serial_number: None,
+        };
+        let keys = PluginKeys::dial(
+            &profile,
+            device,
+            PluginImageTable::default(),
+            bridge,
+            variables(&profile),
+        );
+        (keys, sent)
+    }
+
+    fn dial_picture(side: u32) -> String {
+        let image = RgbImage::from_pixel(side, side, Rgb([0, 90, 200]));
+        STANDARD.encode(if side == 240 {
+            crate::dial_artwork::encode(&image).unwrap()
+        } else {
+            encode(&image).unwrap()
+        })
+    }
+
+    #[test]
+    fn the_dial_is_one_key_per_dial_function_and_takes_240_pixel_pictures() {
+        let (keys, sent) = dial_keys(json!({"schema_version": 1, "name": "Dial", "bindings": [],
+            "variables": [{"name": "room", "value": "desk"}],
+            "dial_functions": [
+                {"name": "Meter", "bindings": [{"gesture": "right", "action": plugin("meter", "a")}]},
+                {"name": "Volume", "bindings": [{"gesture": "right", "action": {"type": "volume", "delta": 2}}]}]}));
+        keys.show_page(&dial_page(Some(0)));
+        assert_eq!(
+            sent.lock().unwrap()[0],
+            json!({"type": "plugin_key", "state": "shown", "page": "function:0", "slot": 0, "plugin": "com.x.now",
+                "min_version": "1.0.0", "action": "meter", "params": {"channel": "a", "room": "desk"},
+                "variables": ["room"], "control": {"module": "m131e", "index": 0}})
+        );
+        assert_eq!(states(&sent), ["shown function:0/0 meter"]);
+        // A function no plugin draws shows nothing; coming back shows the plugin's again.
+        keys.show_page(&dial_page(Some(1)));
+        assert_eq!(states(&sent), ["hidden function:0/0 meter"]);
+        keys.show_page(&dial_page(Some(0)));
+        assert_eq!(states(&sent), ["shown function:0/0 meter"]);
+
+        keys.set_image("function:0", 0, &dial_picture(240)).unwrap();
+        assert!(keys.table().generation("function:0", 0).is_some());
+        for (page, slot, image, error) in [
+            (
+                "function:0",
+                0,
+                dial_picture(72),
+                "the plugin image is not a dial image: hidapi error: Dial JPEG dimensions must be 240×240",
+            ),
+            (
+                "function:1",
+                0,
+                dial_picture(240),
+                "the dial on \"function:1\" is not drawn by a plugin",
+            ),
+            (
+                "function:2",
+                0,
+                dial_picture(240),
+                "the profile has no dial function \"function:2\"",
+            ),
+            (
+                "function:00",
+                0,
+                dial_picture(240),
+                "\"function:00\" is not a dial page: they are \"dial\" and \"function:<index>\"",
+            ),
+            (
+                "dial",
+                0,
+                dial_picture(240),
+                "the profile has dial functions: name one",
+            ),
+            (
+                "function:0",
+                1,
+                dial_picture(240),
+                "slot 1 is not the dial: the dial is slot 0",
+            ),
+            (
+                "function:0",
+                0,
+                "!".into(),
+                "the plugin image is not valid base64",
+            ),
+        ] {
+            assert_eq!(
+                keys.set_image(page, slot, &image).unwrap_err(),
+                error,
+                "{page} {slot}"
+            );
+        }
+        let too_big = "A".repeat(MAX_PLUGIN_DIAL_IMAGE_BYTES.div_ceil(3) * 4 + 4);
+        assert_eq!(
+            keys.set_image("function:0", 0, &too_big).unwrap_err(),
+            "the plugin image is larger than 40 KiB"
+        );
+        keys.clear(Some("function:0"), Some(0), None).unwrap();
+        assert!(keys.table().get("function:0", 0).is_none());
+        keys.end();
+        assert_eq!(states(&sent), ["hidden function:0/0 meter"]);
+
+        // Without dial functions the dial is the page "dial".
+        let (keys, sent) = dial_keys(json!({"schema_version": 1, "name": "Flat", "bindings": [
+            {"module": "m131e", "control": 0, "gesture": "right", "action": plugin("flat", "b")}],
+            "variables": [{"name": "room", "value": "desk"}]}));
+        keys.show_page(&dial_page(None));
+        assert_eq!(states(&sent), ["shown dial/0 flat"]);
+        keys.set_image("dial", 0, &dial_picture(240)).unwrap();
+        assert_eq!(
+            keys.set_image("function:0", 0, &dial_picture(240))
+                .unwrap_err(),
+            "the profile has no dial function \"function:0\""
+        );
     }
 
     #[test]

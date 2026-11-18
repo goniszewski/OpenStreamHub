@@ -44,8 +44,9 @@
 //! when the slot's plugin or action changes). A plugin that may hear of a shown key ([`plugins::check_key`], the
 //! run executing with it, the plugin connected) is sent `{"type":"appear","key":…,"action":…,"params":…,"control":…}`,
 //! again for every shown key after its `welcome`, and `{"type":"disappear","key":…}` once it should no longer hear of
-//! one. Its `set_image` (a 72×72 PNG or JPEG of at most [`MAX_IMAGE_BYTES`], re-encoded as the module's baseline
-//! JPEG) and `clear_image` go to the run's control channel as `plugin_image` and `plugin_image_clear`, at most
+//! one. A dial run's dial function (`control.module` `m131e`) is such a key too. Its `set_image` (a 72×72 PNG or JPEG
+//! of at most [`MAX_IMAGE_BYTES`], on the dial 240×240 and [`MAX_DIAL_IMAGE_BYTES`], re-encoded as the module's
+//! baseline JPEG) and `clear_image` go to the run's control channel as `plugin_image` and `plugin_image_clear`, at most
 //! [`MAX_IMAGES_PER_SECOND`] of the two a second per plugin and [`MAX_QUEUED_IMAGES`] of a plugin's waiting for one
 //! run; the reply waits for the module's answer, on the run's own image thread, so the plugin's reader never waits
 //! for a module. When a plugin stops for any reason, every run it drew on
@@ -56,7 +57,9 @@ use crate::{
     plugins::{self, Approval, Approved, Manifest},
 };
 use base64::Engine as _;
-use cooltek_sdk_cli::image_prep::{PrepareOptions, prepare_keypad_image, within_frame_budget};
+use cooltek_sdk_cli::image_prep::{
+    PrepareOptions, prepare_image, prepare_keypad_image, within_budget, within_frame_budget,
+};
 use cooltek_sdk_service::{PluginUse, PluginUseKind, PluginValue};
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -112,6 +115,11 @@ pub const MAX_IMAGES_PER_SECOND: usize = 20;
 pub const MAX_IMAGE_BYTES: usize = 32 * 1024;
 /// A key image's width and height.
 const KEY_SIDE: u32 = 72;
+/// The largest dial image a plugin may send, decoded, and the most the module is sent once it is re-encoded: well
+/// under the 64 KiB a line may carry once encoded.
+pub const MAX_DIAL_IMAGE_BYTES: usize = 40 * 1024;
+/// The dial screen's width and height.
+const DIAL_SIDE: u32 = 240;
 /// One plugin's `set_image` and `clear_image` waiting for one module run; more of its own are refused until the run
 /// catches up, so one plugin cannot hold up another's.
 const MAX_QUEUED_IMAGES: usize = 32;
@@ -751,20 +759,26 @@ fn control_of(control: &Value) -> Option<Value> {
 
 /// A plugin's `set_image` picture as the module draws it: standard base64 of a 72×72 PNG or JPEG of at most
 /// [`MAX_IMAGE_BYTES`] (the size is checked before decoding, the dimensions from the header before the pixels),
-/// re-encoded as the module's 72×72 baseline JFIF, in standard base64.
-fn prepare_key_image(image: &Value) -> Result<String, String> {
-    let too_big = || format!("the image is larger than {} KiB", MAX_IMAGE_BYTES / 1024);
+/// re-encoded as the module's 72×72 baseline JFIF, in standard base64. On the dial (`dial`), 240×240 and
+/// [`MAX_DIAL_IMAGE_BYTES`].
+fn prepare_key_image(image: &Value, dial: bool) -> Result<String, String> {
+    let (side, max_bytes) = if dial {
+        (DIAL_SIDE, MAX_DIAL_IMAGE_BYTES)
+    } else {
+        (KEY_SIDE, MAX_IMAGE_BYTES)
+    };
+    let too_big = || format!("the image is larger than {} KiB", max_bytes / 1024);
     let text = image
         .as_str()
         .ok_or("the message has no image (base64 of a PNG or JPEG)")?;
     // Four base64 characters carry three bytes.
-    if text.len() > MAX_IMAGE_BYTES.div_ceil(3) * 4 {
+    if text.len() > max_bytes.div_ceil(3) * 4 {
         return Err(too_big());
     }
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(text)
         .map_err(|_| "the image is not standard base64".to_string())?;
-    if bytes.len() > MAX_IMAGE_BYTES {
+    if bytes.len() > max_bytes {
         return Err(too_big());
     }
     let format = match image::guess_format(&bytes) {
@@ -774,14 +788,21 @@ fn prepare_key_image(image: &Value) -> Result<String, String> {
     let (width, height) = image::ImageReader::with_format(Cursor::new(&bytes), format)
         .into_dimensions()
         .map_err(|error| format!("the image could not be read: {error}"))?;
-    if (width, height) != (KEY_SIDE, KEY_SIDE) {
+    if (width, height) != (side, side) {
+        let what = if dial { "a dial image" } else { "a key image" };
         return Err(format!(
-            "the image is {width}×{height}; a key image is {KEY_SIDE}×{KEY_SIDE}"
+            "the image is {width}×{height}; {what} is {side}×{side}"
         ));
     }
-    let jpeg = within_frame_budget(PrepareOptions::default(), |options| {
-        prepare_keypad_image(&bytes, options)
-    })
+    let jpeg = if dial {
+        within_budget(PrepareOptions::default(), MAX_DIAL_IMAGE_BYTES, |options| {
+            prepare_image(&bytes, options)
+        })
+    } else {
+        within_frame_budget(PrepareOptions::default(), |options| {
+            prepare_keypad_image(&bytes, options)
+        })
+    }
     .map_err(|error| format!("the image could not be read: {error}"))?;
     Ok(base64::engine::general_purpose::STANDARD.encode(jpeg))
 }
@@ -1248,7 +1269,7 @@ impl PluginHost {
         image: bool,
     ) -> Result<(), String> {
         let key = message["key"].as_str().ok_or("the message names no key")?;
-        let (service_id, (page, slot)) = {
+        let (service_id, (page, slot), dial) = {
             let mut guard = self.lock();
             let state = &mut *guard;
             let keys = self.keys();
@@ -1311,11 +1332,11 @@ impl PluginHost {
                     "{dropped} set_image and clear_image were refused: more than {MAX_IMAGES_PER_SECOND} a second"
                 ));
             }
-            (service_id, place)
+            (service_id, place, tile.control["module"] == "m131e")
         };
         // Decoded and re-encoded without a lock held.
         let body = if image {
-            let jpeg = prepare_key_image(&message["image"])?;
+            let jpeg = prepare_key_image(&message["image"], dial)?;
             json!({"type": "plugin_image", "page": page, "slot": slot, "jpeg": jpeg})
         } else {
             json!({"type": "plugin_image_clear", "page": page, "slot": slot})
@@ -3480,6 +3501,74 @@ mod tests {
         thread::sleep(Duration::from_millis(50));
         assert!(sent.lock().unwrap().is_empty());
         assert!(!host.keys().runs["m1"].drawn.contains(ID));
+    }
+
+    #[test]
+    fn a_plugin_draws_the_dial_with_240_pixel_pictures() {
+        let rig = rig(&["/bin/sleep", "30"]);
+        let host = &rig.host;
+        let (control, sent) = run_control();
+        host.set_usage("d1", used());
+        let (mut plugin, _) = Plugin::hello(host, &host.token(ID));
+        host.key(
+            "d1",
+            1,
+            &json!({"type":"plugin_key","state":"shown","page":"function:1","slot":0,"plugin":ID,
+                "min_version":"1.0.0","action":"art","params":{"name":"x"},"control":{"module":"m131e","index":0}}),
+            Arc::clone(&control),
+        );
+        let dial = host.keys().runs["d1"].tiles[&("function:1".to_string(), 0)]
+            .key
+            .clone();
+        assert_eq!(
+            plugin.receive_message(),
+            json!({"type":"appear","key":dial,"action":"art","params":{"name":"x"},
+                "control":{"module":"m131e","index":0}})
+        );
+        let mut next = 0;
+        let mut send = |plugin: &mut Plugin, image: Value| {
+            next += 1;
+            plugin.send(json!({"type":"set_image","id":next,"key":dial,"image":image}));
+            reply_to(plugin, next)
+        };
+        let error = |reply: Value| -> String {
+            assert_eq!(reply["ok"], false, "{reply}");
+            reply["error"].as_str().unwrap().to_string()
+        };
+        assert_eq!(
+            error(send(
+                &mut plugin,
+                json!(picture(72, image::ImageFormat::Png))
+            )),
+            "the image is 72×72; a dial image is 240×240"
+        );
+        let big =
+            base64::engine::general_purpose::STANDARD.encode(vec![0; MAX_DIAL_IMAGE_BYTES + 1]);
+        assert_eq!(
+            error(send(&mut plugin, json!(big))),
+            "the image is larger than 40 KiB"
+        );
+        assert!(sent.lock().unwrap().is_empty());
+        for format in [image::ImageFormat::Png, image::ImageFormat::Jpeg] {
+            assert_eq!(send(&mut plugin, json!(picture(240, format)))["ok"], true);
+            let body = sent.lock().unwrap().pop().unwrap();
+            assert_eq!(body["type"], "plugin_image");
+            assert_eq!(
+                (&body["page"], &body["slot"]),
+                (&json!("function:1"), &json!(0))
+            );
+            let jpeg = base64::engine::general_purpose::STANDARD
+                .decode(body["jpeg"].as_str().unwrap())
+                .unwrap();
+            assert!(jpeg.len() <= MAX_DIAL_IMAGE_BYTES);
+            assert_eq!(
+                image::ImageReader::with_format(Cursor::new(&jpeg), image::ImageFormat::Jpeg)
+                    .into_dimensions()
+                    .unwrap(),
+                (240, 240)
+            );
+            assert!(jpeg.windows(2).any(|marker| marker == [0xFF, 0xC0]));
+        }
     }
 
     #[test]

@@ -46,7 +46,8 @@
 //!   `error` unless `ok`. A check's answer carries `"value":true` or `false`; without a boolean `value` the check
 //!   fails, and an invoke ignores it. A request nobody waits for any more (it timed out) is refused.
 //!
-//! Plugin key images, for a run started with `--plugin-host` that draws an M4315 keypad's pages (display sync):
+//! Plugin key images, for a run started with `--plugin-host` that draws an M4315 keypad's pages or the M131E dial
+//! screen (display sync):
 //!
 //! - `{"id":10,"type":"plugin_image","page":"root","slot":3,"jpeg":"<base64>"}` keeps one 72×72 baseline JPEG (at most
 //!   32 KiB) as the picture of the key in `slot` of `page`, for the rest of the run, and redraws it if its page is on
@@ -54,6 +55,9 @@
 //!   action directly, for a bad picture, and once the run is ending.
 //! - `{"id":11,"type":"plugin_image_clear","page":"root","slot":3}` forgets one key's picture, `"plugin":"com.x.y"`
 //!   every picture of one plugin, and neither every picture. The keys show their own face again.
+//! - On the dial, `page` names the dial function (`"function:2"`, or `"dial"` for a profile without dial functions),
+//!   `slot` is 0, and the picture is a 240×240 baseline JPEG of at most 40 KiB, shown instead of the dial's own face
+//!   while that function is current.
 //!
 //! A line that is not a valid request is answered with `ok: false` and no `id`. End of stdin still ends the run.
 
@@ -89,7 +93,8 @@ pub struct Hooks {
     pub variables: Option<cooltek_sdk_service::SharedVariables>,
     /// The run's plugin bridge, which `plugin_result` answers.
     pub plugins: Option<cooltek_sdk_service::PluginBridge>,
-    /// The keys plugins draw, for `plugin_image` and `plugin_image_clear`: a keypad run that draws its pages.
+    /// The keys plugins draw, for `plugin_image` and `plugin_image_clear`: a keypad run that draws its pages, or a dial
+    /// run that draws its screen.
     pub plugin_images: Option<crate::plugin_image::PluginKeys>,
     /// The key report length, read from the module's descriptor with the first key image only.
     #[doc(hidden)]
@@ -167,7 +172,7 @@ enum Request {
 }
 
 /// Why a run refuses plugin images: it does not draw an M4315 keypad's pages, or hosts no plugins.
-const NO_PLUGIN_IMAGES: &str = "this run does not draw its keys for plugins (it needs display sync of an M4315 keypad page profile and a plugin host)";
+const NO_PLUGIN_IMAGES: &str = "this run does not draw its keys for plugins (it needs display sync of an M4315 keypad page profile, or of the M131E dial, and a plugin host)";
 
 /// The largest key image accepted, well under the 64 KiB a control line may carry once encoded.
 const MAX_KEY_IMAGE: usize = 40 * 1024;

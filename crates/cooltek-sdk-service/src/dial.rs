@@ -32,6 +32,49 @@ impl DialFunction {
     pub const MAX_NAME_BYTES: usize = 64;
 }
 
+impl Profile {
+    /// The plugin action that draws the M131E dial screen on a dial with `device`'s serial while the dial function at
+    /// `function` is current, or, for a profile without dial functions (`function` is then ignored), at all times.
+    /// It is the first binding that applies to that serial, in profile order (of the function, or of the profile's
+    /// M131E bindings), when it runs a plugin action directly, as for a key
+    /// ([`crate::KeypadTile::plugin_drawer`]). An exact serial's binding hides a wildcard's for the same gesture. A
+    /// plugin action inside a `multi_action` or a `conditional` draws nothing. Whether the manifest lets the action
+    /// draw is the app's to check.
+    pub fn dial_plugin_drawer(
+        &self,
+        function: Option<usize>,
+        device: &DeviceContext,
+    ) -> Option<&Action> {
+        let device = device.normalized().ok()?;
+        let serial = device.serial_number.as_deref();
+        let action = match &self.dial_functions {
+            Some(functions) => {
+                let bindings = functions
+                    .get(function?)?
+                    .bindings
+                    .iter()
+                    .map(|b| (b.gesture, b.serial_number.as_deref(), &b.action));
+                let (_, _, action) = bindings
+                    .clone()
+                    .find(|binding| crate::keypad::applies(bindings.clone(), serial, binding))?;
+                action
+            }
+            None => {
+                let bindings = self
+                    .bindings
+                    .iter()
+                    .filter(|b| b.module == crate::ServiceModule::M131E && b.control == 0)
+                    .map(|b| (b.gesture, b.serial_number.as_deref(), &b.action));
+                let (_, _, action) = bindings
+                    .clone()
+                    .find(|binding| crate::keypad::applies(bindings.clone(), serial, binding))?;
+                action
+            }
+        };
+        matches!(action, Action::Plugin { .. }).then_some(action)
+    }
+}
+
 /// A completed short-click function switch; it never carries a host action.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct DialFunctionNavigation {
@@ -993,5 +1036,52 @@ mod tests {
         let error = crate::BindingEngine::new(flat.clone()).unwrap_err();
         assert!(error.contains("ProfileSession"), "{error}");
         assert!(ProfileSession::new(flat).is_ok());
+    }
+
+    #[test]
+    fn the_dial_is_a_plugins_to_draw_by_the_current_functions_first_binding_that_applies() {
+        let plugin = |action: &str| json!({"type": "plugin", "plugin": "com.x.y", "min_version": "1.0.0", "action": action, "params": {}});
+        let profile = json!({"schema_version": 1, "name": "Dial", "bindings": [], "dial_functions": [
+            // A plugin action first: drawn by it.
+            {"name": "Meter", "bindings": [
+                {"gesture": "right", "action": plugin("meter")},
+                {"gesture": "left", "action": {"type": "volume", "delta": -2}}]},
+            // An ordinary action first: no plugin draws it.
+            {"name": "Volume", "bindings": [
+                {"gesture": "right", "action": {"type": "volume", "delta": 2}},
+                {"gesture": "long_press", "action": plugin("late")}]},
+            // The desk's exact binding hides the wildcard there; elsewhere the wildcard draws.
+            {"name": "Desk", "bindings": [
+                {"gesture": "right", "serial_number": "desk", "action": {"type": "toggle_mute"}},
+                {"gesture": "right", "action": plugin("any")}]},
+            // A plugin action as a step draws nothing.
+            {"name": "Steps", "bindings": [{"gesture": "right",
+                "action": {"type": "multi_action", "actions": [plugin("step"), {"type": "toggle_mute"}]}}]}]});
+        let profile = Profile::from_json(profile.to_string().as_bytes()).unwrap();
+        let drawer = |function: Option<usize>, serial: Option<&str>| match profile
+            .dial_plugin_drawer(function, &dial(serial))
+        {
+            Some(Action::Plugin { action, .. }) => Some(action.clone()),
+            _ => None,
+        };
+        assert_eq!(drawer(Some(0), None).as_deref(), Some("meter"));
+        assert_eq!(drawer(Some(1), None), None);
+        assert_eq!(drawer(Some(2), None).as_deref(), Some("any"));
+        assert_eq!(drawer(Some(2), Some("desk")), None);
+        assert_eq!(drawer(Some(3), None), None);
+        assert_eq!(drawer(Some(9), None), None);
+        assert_eq!(drawer(None, None), None);
+
+        // Without dial functions, the first M131E binding that applies draws, whatever function is asked for.
+        let flat = json!({"schema_version": 1, "name": "Flat", "bindings": [
+            {"module": "m4315", "control": 0, "gesture": "pressed", "action": plugin("key")},
+            {"module": "m131e", "control": 0, "gesture": "left", "action": plugin("flat")},
+            {"module": "m131e", "control": 0, "gesture": "right", "action": {"type": "toggle_mute"}}]});
+        let flat = Profile::from_json(flat.to_string().as_bytes()).unwrap();
+        let Some(Action::Plugin { action, .. }) = flat.dial_plugin_drawer(None, &dial(None)) else {
+            panic!("the flat dial is drawn by its first binding");
+        };
+        assert_eq!(action, "flat");
+        assert!(flat.dial_plugin_drawer(Some(4), &dial(None)).is_some());
     }
 }

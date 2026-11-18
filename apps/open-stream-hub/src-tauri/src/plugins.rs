@@ -1312,7 +1312,11 @@ mod tests {
         checked.sort();
         assert_eq!(
             checked,
-            ["com.example.notify", "com.github.goniszewski.nowplaying"]
+            [
+                "com.example.notify",
+                "com.github.goniszewski.claudecode",
+                "com.github.goniszewski.nowplaying"
+            ]
         );
     }
 

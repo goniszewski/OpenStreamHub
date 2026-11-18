@@ -195,4 +195,13 @@ describe('the inspector line on a key a plugin draws', () => {
     // Without serials, only the first binding counts.
     expect(noteFor([{ action: notify }, { action: toggle }])).toBeNull();
   });
+
+  it('says the plugin draws the dial screen while a dial function whose first binding runs its action is current', () => {
+    view?.unmount();
+    view = render(<PluginsContext.Provider value={{ listing: drawing, error: null, refresh: () => {} }}><PluginKeyNote bindings={[{ action: toggle }]} dial /></PluginsContext.Provider>);
+    expect(view.container.querySelector('.plugin-draws-key')?.textContent).toBe('The plugin draws the dial screen while this function is current in a Live run, unless the dial screen is set to Off. Here, in Test, and until its first picture, the dial shows its own face.');
+    view.unmount();
+    view = render(<PluginsContext.Provider value={{ listing: drawing, error: null, refresh: () => {} }}><PluginKeyNote bindings={[{ serial_number: 'ABC', action: toggle }]} dial /></PluginsContext.Provider>);
+    expect(view.container.querySelector('.plugin-draws-key')?.textContent).toContain('may draw the dial screen');
+  });
 });

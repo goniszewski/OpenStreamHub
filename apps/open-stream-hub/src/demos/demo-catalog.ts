@@ -3,7 +3,8 @@ import type { MessageKey } from '../locales/en';
 export type DemoModule = 'm4315' | 'm131e' | 'm003k' | 'm005s' | 'm032le';
 
 // A demo names every module it needs; each shows as a tag on its card.
-export type Demo = { id: string; name: MessageKey; description: MessageKey; modules: readonly DemoModule[] };
+// `turns` lists modules a demo also uses when one is connected (the first that is), though it does not need them.
+export type Demo = { id: string; name: MessageKey; description: MessageKey; modules: readonly DemoModule[]; turns?: readonly DemoModule[] };
 
 export const demoModuleName: Record<DemoModule, MessageKey> = {
   m4315: 'demos.module.keypad',
@@ -15,6 +16,7 @@ export const demoModuleName: Record<DemoModule, MessageKey> = {
 
 export const demos: readonly Demo[] = [
   { id: 'tic-tac-toe', name: 'demos.ticTacToe.name', description: 'demos.ticTacToe.description', modules: ['m4315'] },
+  { id: 'twofold', name: 'demos.twofold.name', description: 'demos.twofold.description', modules: ['m4315'], turns: ['m032le', 'm003k'] },
   { id: 'whack-a-mole', name: 'demos.whack.name', description: 'demos.whack.description', modules: ['m4315'] },
   { id: 'display-speed', name: 'demos.speed.name', description: 'demos.speed.description', modules: ['m4315'] },
 ];

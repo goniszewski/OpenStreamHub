@@ -156,6 +156,50 @@ pub(crate) fn write_reports<T: ReportTransport + ?Sized>(
     Ok(count)
 }
 
+/// The feature report a module answers a command on.
+pub const COMMAND_REPLY_REPORT_ID: u8 = 0x03;
+
+/// Sends a feature command, then reads report `0x03` back, returning exactly the
+/// bytes the module answered with.
+///
+/// A display module that takes the command answers with a full report; one that
+/// ignores it (for example a keypad left in hardware mode that no longer takes a
+/// software-mode SET) answers with zero bytes, so an empty reply means "ignored",
+/// not a failure. On Windows the HID stack reports that zero-length answer as a
+/// failed GET rather than 0 bytes, so there a failed GET after a successful SET is
+/// returned as an empty reply. Elsewhere a failed GET is an error.
+///
+/// A failed SET is always an error and nothing is read.
+///
+/// # Errors
+/// The SET's error, a GET error outside Windows, or a reply length exceeding
+/// the 32-byte buffer.
+pub fn command_with_reply<T: ReportTransport + ?Sized>(
+    transport: &T,
+    command: &[u8],
+) -> HidResult<Vec<u8>> {
+    command_with_reply_on(transport, command, cfg!(windows))
+}
+
+fn command_with_reply_on<T: ReportTransport + ?Sized>(
+    transport: &T,
+    command: &[u8],
+    failed_get_is_empty: bool,
+) -> HidResult<Vec<u8>> {
+    transport.send_feature_report(command)?;
+    let mut reply = [0u8; 32];
+    reply[0] = COMMAND_REPLY_REPORT_ID;
+    let received = match transport.get_feature_report(&mut reply) {
+        Ok(received) => received,
+        Err(_) if failed_get_is_empty => 0,
+        Err(error) => return Err(error),
+    };
+    let reply = reply.get(..received).ok_or_else(|| HidError::HidApiError {
+        message: "Command reply transport returned more than 32 bytes".into(),
+    })?;
+    Ok(reply.to_vec())
+}
+
 /// Queries and parses a descriptor to obtain an output length including its ID.
 ///
 /// Errors propagate rather than substituting a default packet size.
@@ -428,6 +472,115 @@ mod tests {
             check_feature_report_length(&malformed, 3, 32).unwrap(),
             FeatureLengthCheck::DescriptorUnavailable
         );
+    }
+
+    enum Get {
+        Reply(Vec<u8>),
+        Fails,
+        Overlong,
+    }
+
+    struct CommandFake {
+        set_fails: bool,
+        get: Get,
+        calls: RefCell<Vec<&'static str>>,
+    }
+
+    impl CommandFake {
+        fn new(get: Get) -> Self {
+            Self {
+                set_fails: false,
+                get,
+                calls: RefCell::new(Vec::new()),
+            }
+        }
+    }
+
+    impl ReportTransport for CommandFake {
+        fn read_timeout(&self, _: &mut [u8], _: i32) -> HidResult<usize> {
+            panic!("a command must not read input")
+        }
+        fn get_feature_report(&self, buffer: &mut [u8]) -> HidResult<usize> {
+            assert_eq!(buffer[0], COMMAND_REPLY_REPORT_ID);
+            self.calls.borrow_mut().push("get");
+            match &self.get {
+                Get::Reply(bytes) => {
+                    buffer[..bytes.len()].copy_from_slice(bytes);
+                    Ok(bytes.len())
+                }
+                Get::Fails => Err(HidError::HidApiError {
+                    message: "HidD_GetFeature: the device does not recognize the command".into(),
+                }),
+                Get::Overlong => Ok(buffer.len() + 1),
+            }
+        }
+        fn send_feature_report(&self, data: &[u8]) -> HidResult<()> {
+            assert_eq!(&data[..2], &[0x03, 0x3a]);
+            self.calls.borrow_mut().push("set");
+            if self.set_fails {
+                return Err(HidError::HidApiError {
+                    message: "set failed".into(),
+                });
+            }
+            Ok(())
+        }
+    }
+
+    const COMMAND: [u8; 3] = [0x03, 0x3a, 0x01];
+
+    #[test]
+    fn a_command_reply_is_exactly_the_bytes_the_module_answered() {
+        let mut full = vec![0x03, 0x3a, 0x01];
+        full.resize(32, 0);
+        for windows in [false, true] {
+            let fake = CommandFake::new(Get::Reply(full.clone()));
+            assert_eq!(
+                command_with_reply_on(&fake, &COMMAND, windows).unwrap(),
+                full
+            );
+            assert_eq!(*fake.calls.borrow(), ["set", "get"]);
+            // A module that ignored the command answers with zero bytes.
+            let ignored = CommandFake::new(Get::Reply(Vec::new()));
+            assert!(
+                command_with_reply_on(&ignored, &COMMAND, windows)
+                    .unwrap()
+                    .is_empty()
+            );
+        }
+    }
+
+    #[test]
+    fn a_failed_get_after_the_command_is_an_empty_reply_only_on_windows() {
+        let windows = CommandFake::new(Get::Fails);
+        assert!(
+            command_with_reply_on(&windows, &COMMAND, true)
+                .unwrap()
+                .is_empty()
+        );
+        let elsewhere = CommandFake::new(Get::Fails);
+        let error = command_with_reply_on(&elsewhere, &COMMAND, false).unwrap_err();
+        assert!(error.to_string().contains("does not recognize"));
+        assert_eq!(*elsewhere.calls.borrow(), ["set", "get"]);
+    }
+
+    #[test]
+    fn a_failed_command_is_an_error_and_nothing_is_read_back() {
+        for windows in [false, true] {
+            let mut fake = CommandFake::new(Get::Fails);
+            fake.set_fails = true;
+            let error = command_with_reply_on(&fake, &COMMAND, windows).unwrap_err();
+            assert!(error.to_string().contains("set failed"));
+            assert_eq!(*fake.calls.borrow(), ["set"]);
+        }
+    }
+
+    #[test]
+    fn an_overlong_command_reply_is_refused() {
+        for windows in [false, true] {
+            let fake = CommandFake::new(Get::Overlong);
+            let error = command_with_reply_on(&fake, &COMMAND, windows).unwrap_err();
+            assert!(error.to_string().contains("more than 32 bytes"));
+        }
     }
 
     #[test]

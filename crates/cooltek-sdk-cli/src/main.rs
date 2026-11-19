@@ -278,6 +278,10 @@ enum DialCommand {
         mode: DialMode,
         #[arg(long, value_parser = parse_path)]
         path_hex: Option<DevicePath>,
+        /// After sending, read report 0x03 back and print its length: a full
+        /// reply means the dial took the command, an empty one that it ignored it.
+        #[arg(long, requires = "path_hex")]
+        read_back: bool,
     },
     /// Preview backlight control; --path-hex explicitly sends the command.
     Backlight {
@@ -659,10 +663,28 @@ fn dial_command(command: DialCommand) -> Result<(), Box<dyn Error>> {
         DialCommand::PrepareImage(arguments) => {
             prepare_image_command(arguments, ImagePreparationTarget::Dial)
         }
-        DialCommand::Mode { mode, path_hex } => feature_command(
-            dial::software_mode_report(matches!(mode, DialMode::Software)),
+        DialCommand::Mode {
+            mode,
             path_hex,
-        ),
+            read_back,
+        } => {
+            let report = dial::software_mode_report(matches!(mode, DialMode::Software));
+            match path_hex {
+                Some(path) if read_back => {
+                    let reply =
+                        cooltek_sdk_masterhub::command_with_reply(&open_dial(&path)?, &report)?;
+                    print_json(&json!({
+                        "type": "feature_sent",
+                        "source": "hardware",
+                        "raw_hex": encode_hex(&report),
+                        "reply_report_id": cooltek_sdk_masterhub::COMMAND_REPLY_REPORT_ID,
+                        "reply_length": reply.len(),
+                        "reply_hex": encode_hex(&reply),
+                    }))
+                }
+                path => feature_command(report, path),
+            }
+        }
         DialCommand::Backlight { value, path_hex } => {
             feature_command(dial::backlight_report(value)?, path_hex)
         }
@@ -1425,6 +1447,28 @@ mod tests {
             assert_eq!(path.0, vec![0x61, 0xff]);
         }
         assert!(Cli::try_parse_from(["masterhub-diag", "dial", "info"]).is_err());
+    }
+
+    #[test]
+    fn dial_mode_reads_back_only_from_a_selected_dial() {
+        let parse = |arguments: &[&str]| {
+            Cli::try_parse_from(
+                ["masterhub-diag", "dial", "mode", "software"]
+                    .into_iter()
+                    .chain(arguments.iter().copied()),
+            )
+        };
+        let Command::Dial {
+            command: DialCommand::Mode { read_back, .. },
+        } = parse(&["--path-hex", "61ff", "--read-back"])
+            .unwrap()
+            .command
+        else {
+            panic!("expected dial mode");
+        };
+        assert!(read_back);
+        // A preview sends nothing, so there is nothing to read back.
+        assert!(parse(&["--read-back"]).is_err());
     }
 
     #[test]

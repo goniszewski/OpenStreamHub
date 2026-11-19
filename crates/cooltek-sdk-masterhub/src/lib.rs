@@ -39,7 +39,10 @@ pub use dial_session::{
 pub use discovery::{DeviceRegistry, ModuleIdentity, ModuleKind};
 pub use hid::ModuleHandle;
 pub use module::Module;
-pub use transport::{InputReader, ReportTransport, ShortWrite, output_report_length};
+pub use transport::{
+    COMMAND_REPLY_REPORT_ID, InputReader, ReportTransport, ShortWrite, command_with_reply,
+    output_report_length,
+};
 pub use types::{ProductId, ProductIdError, VendorId, VendorIdError};
 
 // -------------------------------

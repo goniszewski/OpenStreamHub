@@ -4,15 +4,16 @@
 //! its JSONL stdout as `service://record` events without interpreting them, and
 //! reports the process lifecycle as `service://status`.
 //!
-//! Stopping sends one SIGINT (a second Ctrl-C would make the service exit
-//! immediately, so it is never repeated), waits up to `STOP_GRACE`, then
-//! SIGKILLs the child's process group. A software-mode run is started with
-//! `--blank-on-stop`, so a SIGINT stop blanks the keypad's keys or the dial's
-//! screen and leaves the module in software mode for the next run: a module
-//! handed back to hardware mode ignores software mode until it is replugged.
-//! App exit (`Services::stop_all`) closes each child's stdin instead, and the
-//! service then restores hardware mode, so the built-in animation comes back
-//! once the app has quit. The
+//! A stop is one of two kinds ([`StopKind`]), each followed by a wait of up to
+//! `STOP_GRACE` and then a SIGKILL of the child's process group. A software-mode
+//! run is started with `--blank-on-stop`: an automatic stop (a restart) sends one
+//! SIGINT (a second Ctrl-C would make the service exit immediately, so it is
+//! never repeated), and the service blanks the keypad's keys or the dial's screen
+//! and keeps the module in software mode for the next run. A user's stop (Stop,
+//! Module control leaving App, Quit through `Services::stop_all`) closes the
+//! child's stdin instead, and the service restores hardware mode, so the
+//! built-in animation comes back. A module handed back that way ignores
+//! software mode until it is replugged or re-enumerated (`session.rs`). The
 //! child runs in its own process group so a terminal Ctrl-C aimed at the app
 //! (e.g. during `tauri dev`) does not reach it a second time.
 //!
@@ -217,10 +218,10 @@ pub fn check_execute_supported(execute: bool) -> Result<(), String> {
 /// `--exit-on-stdin-eof` is always passed: [`Services::start_with_stdin`] keeps
 /// the child's stdin pipe open for the child's whole life, so the service stops
 /// cleanly (restoring hardware mode) when this app dies, even by SIGKILL, or
-/// quits ([`Services::stop_all`] closes the pipe). A software-mode run also
-/// gets `--blank-on-stop`: every other stop (SIGINT) blanks the module's
-/// screens and keeps it in software mode, so the next run on it can enter
-/// software mode again.
+/// when the user stops it or quits ([`StopKind::HandBack`] closes the pipe). A
+/// software-mode run also gets `--blank-on-stop`: the app's own restarts
+/// ([`StopKind::Blank`], SIGINT) blank the module's screens and keep it in
+/// software mode, so the restarted run can enter software mode again.
 /// `profile_switch_requests` is set for session-managed runs: the service then
 /// reports `profile` key actions as `profile_switch_requested` records, which
 /// the session driver resolves against the saved profiles.
@@ -778,8 +779,8 @@ impl ServiceHandle {
         );
     }
 
-    /// Emits `stopping` once and closes the child's stdin, the app-exit stop: the service then restores hardware
-    /// mode (footer reason `stdin_closed`) instead of blanking its screens as it does after SIGINT.
+    /// Emits `stopping` once and closes the child's stdin, the user's stop and the app-exit stop: the service then
+    /// restores hardware mode (footer reason `stdin_closed`) instead of blanking its screens as it does after SIGINT.
     fn request_quit(&self, service_id: &str) {
         {
             let mut child = lock_child(&self.child);
@@ -832,6 +833,17 @@ fn wait_until(deadline: Instant, mut ready: impl FnMut() -> bool) -> bool {
         }
         thread::sleep(POLL);
     }
+}
+
+/// How a run is stopped. Both wait up to the grace period, then SIGKILL.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StopKind {
+    /// SIGINT, for the stops the app makes itself to restart a run: a software-mode run blanks its screens and stays
+    /// in software mode (`--blank-on-stop`), so the restarted run takes software mode at once.
+    Blank,
+    /// Closes the run's stdin, for the user's stops: the service restores hardware mode (footer `stdin_closed`), so
+    /// the built-in animation returns.
+    HandBack,
 }
 
 /// Running service children by id.
@@ -1165,15 +1177,23 @@ impl Services {
         Ok(service_id)
     }
 
-    /// SIGINT, up to `grace` for a clean exit, then SIGKILL. Returns once the
-    /// child is reaped and `exited` emitted. Unknown ids are ignored.
+    /// SIGINT ([`StopKind::Blank`]), up to `grace` for a clean exit, then SIGKILL. Returns once the child is reaped
+    /// and `exited` emitted. Unknown ids are ignored.
     pub fn stop(&self, service_id: &str, grace: Duration) -> Result<(), String> {
+        self.stop_as(service_id, grace, StopKind::Blank)
+    }
+
+    /// [`Services::stop`] of either kind: SIGINT, or closing the child's stdin.
+    pub fn stop_as(&self, service_id: &str, grace: Duration, kind: StopKind) -> Result<(), String> {
         let (join, done) = {
             let mut services = self.lock();
             let Some(handle) = services.get_mut(service_id) else {
                 return Ok(());
             };
-            handle.request_stop(service_id);
+            match kind {
+                StopKind::Blank => handle.request_stop(service_id),
+                StopKind::HandBack => handle.request_quit(service_id),
+            }
             (handle.join.take(), Arc::clone(&handle.done))
         };
         let reaped = wait_until(Instant::now() + grace, || done.load(Ordering::SeqCst));
@@ -1201,13 +1221,13 @@ impl Services {
         Ok(())
     }
 
-    /// Stops several services in parallel: every SIGINT goes out at once, so
-    /// the whole call is bounded by one `stop`, not by their sum.
-    pub fn stop_many(&self, service_ids: &[String], grace: Duration) {
+    /// Stops several services in parallel, each its own way: every stop goes out at once, so the whole call is
+    /// bounded by one `stop`, not by their sum.
+    pub fn stop_many(&self, stops: &[(String, StopKind)], grace: Duration) {
         thread::scope(|scope| {
-            for service_id in service_ids {
+            for (service_id, kind) in stops {
                 scope.spawn(move || {
-                    if let Err(error) = self.stop(service_id, grace) {
+                    if let Err(error) = self.stop_as(service_id, grace, *kind) {
                         eprintln!("could not stop {service_id}: {error}");
                     }
                 });
@@ -2728,7 +2748,12 @@ mod tests {
         }
         thread::sleep(Duration::from_millis(100));
         let started = Instant::now();
-        services.stop_many(&ids, Duration::from_millis(400));
+        let stops: Vec<(String, StopKind)> = ids
+            .iter()
+            .zip([StopKind::Blank, StopKind::HandBack, StopKind::Blank])
+            .map(|(id, kind)| (id.clone(), kind))
+            .collect();
+        services.stop_many(&stops, Duration::from_millis(400));
         let elapsed = started.elapsed();
         // Serially this would take at least 1.2 s.
         assert!(elapsed < Duration::from_millis(1_100), "took {elapsed:?}");
@@ -2912,6 +2937,32 @@ mod tests {
             "a failed write must not close stdin"
         );
         assert!(control.waiters.lock().unwrap().is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_blank_stop_sends_sigint_and_a_hand_back_stop_closes_stdin() {
+        use process::*;
+        let services = Services::default();
+        // Exit 3 on SIGINT, 0 on the end of stdin: the exit code says which stop arrived.
+        // `cat` runs in the background on the script's own stdin, so `wait` returns at once on SIGINT.
+        let script = "trap 'exit 3' INT; printf '{\"type\":\"service_start\"}\\n'; cat <&0 >/dev/null & wait $!; exit 0";
+        for (kind, code) in [(StopKind::Blank, 3), (StopKind::HandBack, 0)] {
+            let (emit, messages) = collector();
+            start_script(&services, "service:4b", script, None, emit).unwrap();
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while records(&messages).is_empty() {
+                assert!(Instant::now() < deadline, "the script never started");
+                thread::sleep(Duration::from_millis(10));
+            }
+            services.stop_as("service:4b", STOP_GRACE, kind).unwrap();
+            assert_eq!(
+                statuses(&messages).last().unwrap().exit_code,
+                Some(Some(code)),
+                "{kind:?}"
+            );
+            assert!(states(&messages).contains(&ServiceState::Stopping));
+        }
     }
 
     #[cfg(unix)]

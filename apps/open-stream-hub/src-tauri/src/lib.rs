@@ -1228,8 +1228,8 @@ fn demo_start(
     })
 }
 
-// Ends a demo: its run stops (SIGINT, so a software-mode run blanks its screens and keeps software mode), and the
-// module's session starts again.
+// Ends a demo: its run stops (SIGINT, so a software-mode run blanks its screens and keeps software mode, an automatic
+// stop), and the module's session starts again.
 #[tauri::command(async)]
 fn demo_end(state: State<'_, AppState>, path_hex: String) -> Result<(), String> {
     let service_id = service::service_id(&path_hex)?;
@@ -1501,6 +1501,27 @@ impl AppRunner {
     }
 }
 
+/// How long the session driver waits for a module re-enumeration request to return.
+const REENUMERATE_WAIT: Duration = Duration::from_secs(2);
+
+/// Re-enumerates the USB device behind the HID path `path_hex` on a worker thread, waiting at most
+/// [`REENUMERATE_WAIT`], so an IOKit call that blocks can never hold up the session driver for long.
+fn reenumerate_module(path_hex: &str) -> Result<(), String> {
+    let path = cooltek_sdk_cli::device::parse_path(path_hex)?;
+    let path =
+        std::ffi::CString::new(path.0).map_err(|_| "the HID path holds a NUL byte".to_string())?;
+    let (sender, receiver) = mpsc::channel();
+    std::thread::Builder::new()
+        .name("reenumerate".into())
+        .spawn(move || {
+            let _ = sender.send(cooltek_sdk_masterhub::reenumerate::reenumerate(&path));
+        })
+        .map_err(|error| format!("could not start the re-enumeration: {error}"))?;
+    receiver
+        .recv_timeout(REENUMERATE_WAIT)
+        .unwrap_or_else(|_| Err("the re-enumeration did not return in time".into()))
+}
+
 impl session::Runner for AppRunner {
     fn check(&mut self, request: &service::StartRequest) -> Result<(), String> {
         let id = service::service_id(&request.path_hex)?;
@@ -1526,20 +1547,27 @@ impl session::Runner for AppRunner {
         started
     }
 
-    fn stop(&mut self, service_id: &str) {
+    fn stop(&mut self, service_id: &str, kind: service::StopKind) {
         let state = self.app.state::<AppState>();
         self.carry.snapshot(&state.services, service_id);
-        if let Err(error) = state.services.stop(service_id, service::STOP_GRACE) {
+        if let Err(error) = state
+            .services
+            .stop_as(service_id, service::STOP_GRACE, kind)
+        {
             eprintln!("could not stop {service_id}: {error}");
         }
     }
 
-    fn stop_many(&mut self, service_ids: &[String]) {
+    fn stop_many(&mut self, stops: &[(String, service::StopKind)]) {
         let state = self.app.state::<AppState>();
-        for id in service_ids {
+        for (id, _) in stops {
             self.carry.snapshot(&state.services, id);
         }
-        state.services.stop_many(service_ids, service::STOP_GRACE);
+        state.services.stop_many(stops, service::STOP_GRACE);
+    }
+
+    fn reenumerate(&mut self, path_hex: &str) -> Result<(), String> {
+        reenumerate_module(path_hex)
     }
 
     fn can_switch_mode(&self) -> bool {
@@ -1871,7 +1899,12 @@ fn stop_service(state: State<'_, AppState>, service_id: String) -> Result<(), St
     if state.sessions.stop(&service_id, false)? {
         return Ok(());
     }
-    state.services.stop(&service_id, service::STOP_GRACE)
+    // The user's Stop of a run no session manages: the built-in animation returns.
+    state.services.stop_as(
+        &service_id,
+        service::STOP_GRACE,
+        service::StopKind::HandBack,
+    )
 }
 
 // Restarts a session waiting in `needs_confirmation` with its stored

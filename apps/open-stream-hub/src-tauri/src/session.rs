@@ -62,8 +62,13 @@
 //! not find its path or HIDAPI could not open it) keeps the retry. A module
 //! another program holds open (`IN_USE`) is a refusal too, never a retry.
 //! A keypad or dial that ignored the software-mode command (it was handed back
-//! to hardware mode earlier and keeps it until it is replugged) is never
-//! retried on a timer either: the session waits, showing
+//! to hardware mode earlier, by a user's Stop, Quit or a Lighting reset) is
+//! not retried on a timer either. The session re-enumerates the module's USB
+//! device once (`Runner::reenumerate`, a software replug, macOS only) and waits
+//! up to `REENUMERATE_TIMEOUT_MS` for it to come back on a new path; the same
+//! start attempt then continues, without a confirmation or a crash count. If
+//! the re-enumeration fails or is unavailable, the module does not come back
+//! in time, or it ignores the command again, the session waits, showing
 //! `SOFTWARE_MODE_IGNORED`, until a replug (the module comes back on another
 //! path, or goes away and returns), a wake (or the end of a demo), which
 //! gives it one new try, or Stop then Start (Start alone is refused while the
@@ -91,7 +96,7 @@ use crate::{
     feed::LiveDevice,
     import_flags::ExecutionGuard,
     power::PowerEvent,
-    service::{self, StartRequest},
+    service::{self, StartRequest, StopKind},
 };
 use cooltek_sdk_service::{Profile, ProfileDirection, ServiceModule};
 use serde::Serialize;
@@ -167,6 +172,13 @@ pub const PROFILE_STEP_DEBOUNCE_MS: u64 = 500;
 pub const AUTO_RETRY_COOLDOWN_MS: u64 = 30_000;
 /// How often a live automatic session re-reads module control (`tick`).
 pub const MODULE_CONTROL_CHECK_MS: u64 = 10_000;
+
+/// How long a session waits for a module it re-enumerated to come back before it asks for a replug. Measured: about
+/// 0.2 s, plus up to a second for the inventory watcher to see it.
+pub const REENUMERATE_TIMEOUT_MS: u64 = 5_000;
+
+/// How long a session waits after a module it re-enumerated came back before it starts the run on it.
+pub const REENUMERATE_SETTLE_MS: u64 = 300;
 
 /// Restart delay for crash attempt `attempt` (1-based): 1 s, 2 s, 4 s, 8 s, 8 s.
 pub fn backoff_ms(attempt: u32) -> u64 {
@@ -310,6 +322,10 @@ pub enum Event {
     /// An in-place mode switch was not accepted by the process (it did not answer, refused, or is gone): the
     /// switch is made the old way, by restarting the process in the new mode.
     ModeSwitchFailed,
+    /// The re-enumeration requested by `Action::Reenumerate` failed (or is unavailable on this platform).
+    ReenumerateFailed {
+        error: String,
+    },
     /// The running process took the stored request's new profile in place: the profile generation moves on, and
     /// nothing is interrupted.
     ProfileApplied {
@@ -329,15 +345,23 @@ pub enum Event {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Action {
-    /// SIGINT path of `Services::stop`. A software-mode run blanks its screens and stays in software mode
-    /// (`--blank-on-stop`), so the next run on the module can enter it again; other runs just end.
+    /// `Services::stop_as`: `Blank` (SIGINT) for a stop that restarts the run later, so a software-mode run blanks
+    /// its screens and stays in software mode (`--blank-on-stop`); `HandBack` (stdin closed) for the user's stops, so
+    /// the built-in animation returns. Other runs just end either way.
     StopService {
         service_id: String,
+        /// `HandBack` for the user's stops (the built-in animation returns), `Blank` for the stops that restart.
+        kind: StopKind,
     },
     /// Start the original request again on `path_hex`.
     StartService {
         path_hex: String,
         execute: bool,
+    },
+    /// Re-enumerate the USB device of the module at `path_hex`. A failure comes back as
+    /// `Event::ReenumerateFailed`.
+    Reenumerate {
+        path_hex: String,
     },
     /// Switch the running process between executing and only logging, in place. A failure comes back as
     /// `Event::ModeSwitchFailed`.
@@ -408,6 +432,26 @@ pub struct Session {
     /// path it was seen at until the module is replugged (seen on another path, or gone), or an interruption
     /// (`interrupt`) allows one new try.
     awaits_replug: bool,
+    /// The app re-enumerated the module after it ignored the software-mode command, and waits for it to come back.
+    reenumeration: Option<Reenumeration>,
+    /// A re-enumeration was used for the current start attempt, so a second ignored command asks for a replug.
+    /// Cleared by an exit for any other reason and by an interruption.
+    reenumerated: bool,
+    /// The module came back after the app's own re-enumeration, and no run on it has written `service_start` yet.
+    /// A run that fails before that (the service's own enumeration lagging, a HIDAPI open error) is retried with the
+    /// usual backoff but stays the same start attempt: no new confirmation, and no second re-enumeration.
+    reenumerated_start: bool,
+}
+
+/// A module the session re-enumerated, until it comes back.
+#[derive(Clone, Debug, PartialEq)]
+struct Reenumeration {
+    /// The path the module ignored the command on.
+    from: String,
+    /// The module was seen gone from the inventory since.
+    gone: bool,
+    /// When the session gives up and asks for a replug (monotonic ms).
+    deadline_ms: u64,
 }
 
 fn blank_to_none(serial: Option<&str>) -> Option<String> {
@@ -493,7 +537,14 @@ pub const IN_USE: &str = "Another program is using this module. Quit it, then re
 
 /// The session detail for a keypad or dial that ignored the software-mode
 /// command. The service says the same in its own words.
-pub const SOFTWARE_MODE_IGNORED: &str = "The module did not take the request to let OpenStreamHub drive its screen: it was handed back to its built-in mode earlier and keeps it until it is unplugged. Unplug the module and plug it back in; the session then starts again on its own (Stop then Start does not help without the replug).";
+pub const SOFTWARE_MODE_IGNORED: &str = "The module did not take the request to let OpenStreamHub drive its screen: it was handed back to its built-in mode earlier and keeps it until it is reset. Unplug the module and plug it back in; the session then starts again on its own (Stop then Start does not help without the replug).";
+
+/// The session detail while the app re-enumerates a module that ignored the software-mode command. Not an error:
+/// this is the usual first start after the module was handed back to its built-in mode.
+pub const REENUMERATING: &str = "The module was in its built-in mode, so OpenStreamHub reset its USB connection; it reconnects in a moment.";
+
+/// What the replug detail adds when the re-enumeration itself failed.
+pub const REENUMERATE_FAILED: &str = "resetting its USB connection did not work";
 
 /// Whether the process ended because its module ignored the software-mode
 /// command (the service's error names it).
@@ -564,6 +615,9 @@ impl Session {
             held_restart: false,
             live_control: false,
             awaits_replug: false,
+            reenumeration: None,
+            reenumerated: false,
+            reenumerated_start: false,
         };
         let mut actions = Vec::new();
         session.reconcile(now_ms, &mut actions);
@@ -651,13 +705,17 @@ impl Session {
         }
     }
 
-    fn stop_process(&mut self, actions: &mut Vec<Action>) {
+    /// Stops the current process once: `HandBack` for a stop the user asked for (Stop, Module control leaving
+    /// App), `Blank` for one the session makes to restart the run later (sleep, a demo, a profile or run-mode
+    /// switch).
+    fn stop_process(&mut self, actions: &mut Vec<Action>, kind: StopKind) {
         if let Some(process) = &mut self.service
             && !process.stopping
         {
             process.stopping = true;
             actions.push(Action::StopService {
                 service_id: process.service_id.clone(),
+                kind,
             });
         }
     }
@@ -669,6 +727,17 @@ impl Session {
         self.confirmed = false;
         // A wake or a demo may have reset the module, so it gets one new try.
         self.awaits_replug = false;
+        self.reenumeration = None;
+        self.reenumerated = false;
+        self.reenumerated_start = false;
+    }
+
+    /// The module ignored software mode and no re-enumeration helps: wait for a replug, showing `detail`.
+    fn wait_for_replug(&mut self, detail: String) {
+        self.reason = Some(Reason::ServiceExited);
+        self.detail = Some(detail);
+        self.retry_at = None;
+        self.awaits_replug = true;
     }
 
     fn apply(&mut self, event: Event, now_ms: u64, actions: &mut Vec<Action>) {
@@ -688,6 +757,7 @@ impl Session {
                     && process.running
                 {
                     process.ready = true;
+                    self.reenumerated_start = false;
                 }
             }
             Event::Suspend if !stopped => {
@@ -723,16 +793,36 @@ impl Session {
                 if stopped || process.stopping {
                     return;
                 }
-                self.confirmed = false;
-                // The module ignored the software-mode command: the same
-                // module refuses it again until it is replugged, so the
-                // session waits for that instead of retrying on a timer.
+                // A run after the app's own re-enumeration that failed before
+                // `service_start` is still that start attempt.
+                let same_attempt = self.reenumerated_start && !process.ready;
+                self.reenumerated_start = same_attempt;
+                self.confirmed = same_attempt;
+                // The module ignored the software-mode command: it refuses it
+                // again until it is reset, so the session re-enumerates it
+                // once (not an interruption: no confirmation, no attempt),
+                // and otherwise waits for a replug instead of retrying on a
+                // timer.
                 if software_mode_ignored(&stderr_tail) && self.find_device().is_ok() {
-                    self.reason = Some(Reason::ServiceExited);
-                    self.detail = Some(SOFTWARE_MODE_IGNORED.into());
                     self.retry_at = None;
-                    self.awaits_replug = true;
+                    if self.reenumerated {
+                        self.wait_for_replug(SOFTWARE_MODE_IGNORED.into());
+                    } else {
+                        self.reenumerated = true;
+                        self.detail = Some(REENUMERATING.into());
+                        self.reenumeration = Some(Reenumeration {
+                            from: self.path_hex.clone(),
+                            gone: false,
+                            deadline_ms: now_ms + REENUMERATE_TIMEOUT_MS,
+                        });
+                        actions.push(Action::Reenumerate {
+                            path_hex: self.path_hex.clone(),
+                        });
+                    }
                     return;
+                }
+                if !same_attempt {
+                    self.reenumerated = false;
                 }
                 // A setup refusal: the process exited with an error before it
                 // wrote `service_start`, while its module is still present
@@ -779,7 +869,7 @@ impl Session {
                 self.asleep = false;
                 self.settle_until = None;
                 self.retry_at = None;
-                self.stop_process(actions);
+                self.stop_process(actions, StopKind::HandBack);
             }
             Event::RunModeChanged {
                 execute,
@@ -802,7 +892,7 @@ impl Session {
                             });
                         } else {
                             self.interrupt(Reason::RunMode);
-                            self.stop_process(actions);
+                            self.stop_process(actions, StopKind::Blank);
                         }
                     }
                 }
@@ -816,7 +906,7 @@ impl Session {
                     self.live_control = false;
                     self.pending_confirm = self.execute;
                     self.interrupt(Reason::RunMode);
-                    self.stop_process(actions);
+                    self.stop_process(actions, StopKind::Blank);
                 }
             }
             Event::ModuleControlOff if !stopped => {
@@ -826,11 +916,17 @@ impl Session {
                 self.asleep = false;
                 self.settle_until = None;
                 self.retry_at = None;
-                self.stop_process(actions);
+                self.stop_process(actions, StopKind::HandBack);
             }
             Event::UserResume if self.phase == Phase::NeedsConfirmation => {
                 self.confirmed = true;
                 self.retry_at = None;
+            }
+            Event::ReenumerateFailed { error } if self.reenumeration.is_some() => {
+                self.reenumeration = None;
+                self.wait_for_replug(format!(
+                    "{SOFTWARE_MODE_IGNORED} (OpenStreamHub tried first, but {REENUMERATE_FAILED}: {error}.)"
+                ));
             }
             Event::ProfileApplied {
                 profile_id,
@@ -859,7 +955,7 @@ impl Session {
                     .is_some_and(|process| !process.stopping)
                 {
                     self.interrupt(reason);
-                    self.stop_process(actions);
+                    self.stop_process(actions, StopKind::Blank);
                 }
             }
             Event::Suspend
@@ -872,6 +968,7 @@ impl Session {
             | Event::ModuleControlOff
             | Event::RunModeChanged { .. }
             | Event::ModeSwitchFailed
+            | Event::ReenumerateFailed { .. }
             | Event::ProfileApplied { .. }
             | Event::ProfileSwitched { .. } => {}
         }
@@ -894,7 +991,7 @@ impl Session {
                 // (a software-mode run blanks its screens and stays in
                 // software mode); a wake seen without a prior suspend
                 // restarts cleanly.
-                self.stop_process(actions);
+                self.stop_process(actions, StopKind::Blank);
                 self.phase = Phase::Suspended;
                 if let Some(until) = settling {
                     schedule(until - now_ms, &mut next, actions);
@@ -918,55 +1015,85 @@ impl Session {
                     }
                 }
             } else {
-                match self.find_device() {
-                    // Still on the path where it ignored software mode: not replugged yet.
-                    Ok(path_hex) if self.awaits_replug && path_hex == self.path_hex => {
-                        self.phase = Phase::WaitingForDevice;
-                    }
-                    Err(detail) => {
-                        self.awaits_replug = false;
-                        self.phase = Phase::WaitingForDevice;
-                        if self.reason == Some(Reason::ServiceExited) {
-                            self.reason = Some(Reason::DeviceRemoved);
-                        }
-                        self.detail = detail.map(str::to_owned);
-                    }
-                    Ok(path_hex) => {
-                        self.path_hex = path_hex;
-                        // Back on another path: replugged, so it takes software mode again.
-                        if self.awaits_replug {
-                            self.awaits_replug = false;
-                            self.detail = None;
-                        }
-                        if self.detail.as_deref() == Some(AMBIGUOUS_DEVICE) {
-                            self.detail = None;
-                        }
-                        // An automatic session restarts by itself; its
-                        // respawn is checked by `Driver::auto_veto`.
-                        if self.pending_confirm {
+                let found = self.find_device();
+                // After the app's own re-enumeration: back (gone and returned, or on a new path) continues the same
+                // start attempt without a confirmation; otherwise wait until the deadline, then ask for a replug.
+                let mut reenumerating = false;
+                if let Some(wait) = self.reenumeration.as_mut() {
+                    match &found {
+                        Ok(path_hex) if wait.gone || *path_hex != wait.from => {
+                            self.reenumeration = None;
                             self.confirmed = true;
-                            self.pending_confirm = false;
+                            self.reenumerated_start = true;
+                            self.detail = None;
+                            // A short settle before the start, so the service's own HID enumeration has the new
+                            // path too (the module answered 0.26 s after the request in the measurement).
+                            self.retry_at = Some(now_ms + REENUMERATE_SETTLE_MS);
                         }
-                        if self.execute && !self.confirmed && self.auto_start.is_none() {
-                            self.phase = Phase::NeedsConfirmation;
-                        } else if let Some(at) = self.retry_at.filter(|at| now_ms < *at) {
-                            self.phase = Phase::Reconnecting;
-                            schedule(at - now_ms, &mut next, actions);
-                        } else {
-                            self.retry_at = None;
-                            self.confirmed = false;
-                            self.phase = Phase::Reconnecting;
-                            self.service = Some(Process {
-                                service_id: format!("service:{}", self.path_hex),
-                                started_ms: now_ms,
-                                running: false,
-                                ready: false,
-                                stopping: false,
-                            });
-                            actions.push(Action::StartService {
-                                path_hex: self.path_hex.clone(),
-                                execute: self.execute,
-                            });
+                        _ => {
+                            wait.gone |= found.is_err();
+                            if now_ms < wait.deadline_ms {
+                                reenumerating = true;
+                                self.phase = Phase::Reconnecting;
+                                schedule(wait.deadline_ms - now_ms, &mut next, actions);
+                            } else {
+                                self.reenumeration = None;
+                                self.wait_for_replug(SOFTWARE_MODE_IGNORED.into());
+                            }
+                        }
+                    }
+                }
+                if !reenumerating {
+                    match found {
+                        // Still on the path where it ignored software mode: not replugged yet.
+                        Ok(path_hex) if self.awaits_replug && path_hex == self.path_hex => {
+                            self.phase = Phase::WaitingForDevice;
+                        }
+                        Err(detail) => {
+                            self.awaits_replug = false;
+                            self.phase = Phase::WaitingForDevice;
+                            if self.reason == Some(Reason::ServiceExited) {
+                                self.reason = Some(Reason::DeviceRemoved);
+                            }
+                            self.detail = detail.map(str::to_owned);
+                        }
+                        Ok(path_hex) => {
+                            self.path_hex = path_hex;
+                            // Back on another path: replugged, so it takes software mode again.
+                            if self.awaits_replug {
+                                self.awaits_replug = false;
+                                self.detail = None;
+                            }
+                            if self.detail.as_deref() == Some(AMBIGUOUS_DEVICE) {
+                                self.detail = None;
+                            }
+                            // An automatic session restarts by itself; its
+                            // respawn is checked by `Driver::auto_veto`.
+                            if self.pending_confirm {
+                                self.confirmed = true;
+                                self.pending_confirm = false;
+                            }
+                            if self.execute && !self.confirmed && self.auto_start.is_none() {
+                                self.phase = Phase::NeedsConfirmation;
+                            } else if let Some(at) = self.retry_at.filter(|at| now_ms < *at) {
+                                self.phase = Phase::Reconnecting;
+                                schedule(at - now_ms, &mut next, actions);
+                            } else {
+                                self.retry_at = None;
+                                self.confirmed = false;
+                                self.phase = Phase::Reconnecting;
+                                self.service = Some(Process {
+                                    service_id: format!("service:{}", self.path_hex),
+                                    started_ms: now_ms,
+                                    running: false,
+                                    ready: false,
+                                    stopping: false,
+                                });
+                                actions.push(Action::StartService {
+                                    path_hex: self.path_hex.clone(),
+                                    execute: self.execute,
+                                });
+                            }
                         }
                     }
                 }
@@ -1000,14 +1127,19 @@ pub trait Runner {
         Ok(())
     }
     fn start(&mut self, request: &StartRequest) -> Result<String, String>;
-    /// Stops via SIGINT, then kills after the grace period.
-    fn stop(&mut self, service_id: &str);
+    /// Stops one process the given way (SIGINT, or closing its stdin), then kills it after the grace period.
+    fn stop(&mut self, service_id: &str, kind: StopKind);
     /// Stops several processes in parallel (e.g. before sleep), so the wait
     /// is bounded by one grace period rather than their sum.
-    fn stop_many(&mut self, service_ids: &[String]) {
-        for service_id in service_ids {
-            self.stop(service_id);
+    fn stop_many(&mut self, stops: &[(String, StopKind)]) {
+        for (service_id, kind) in stops {
+            self.stop(service_id, *kind);
         }
+    }
+    /// Re-enumerates the USB device of the module at `path_hex` (a software replug), so a module that ignored the
+    /// software-mode command comes back on a new path and takes it. Returns once the request was made.
+    fn reenumerate(&mut self, _path_hex: &str) -> Result<(), String> {
+        Err(cooltek_sdk_masterhub::reenumerate::UNAVAILABLE.into())
     }
     /// True once app exit began; nothing may be started any more.
     fn closed(&self) -> bool {
@@ -1267,7 +1399,7 @@ pub struct Driver<R> {
     closed: bool,
     /// While set, `StopService` actions are collected here and then stopped
     /// together through `Runner::stop_many`.
-    deferred_stops: Option<Vec<String>>,
+    deferred_stops: Option<Vec<(String, StopKind)>>,
     /// Between `Suspend` and `Resume`: nothing new is spawned.
     asleep: bool,
     /// When the last `Suspend` arrived (monotonic ms).
@@ -1567,7 +1699,8 @@ impl<R: Runner> Driver<R> {
     pub fn stop(&mut self, id: &str, sessions_only: bool, now_ms: u64) {
         match self.find(id, sessions_only) {
             Some(index) => self.apply(index, Event::UserStop, now_ms),
-            None if !sessions_only => self.runner.stop(id),
+            // Not a session's process: the user's Stop of an unmanaged run.
+            None if !sessions_only => self.runner.stop(id, StopKind::HandBack),
             None => {}
         }
         self.prune();
@@ -2245,9 +2378,8 @@ impl<R: Runner> Driver<R> {
     /// Module control may have changed, or its file may have become
     /// unreadable: every automatic session the current setting no longer
     /// allows (anything but `App`) ends with reason `module_control`, its
-    /// process stopped in one parallel batch (SIGINT: a software-mode run
-    /// blanks its screens and stays in software mode, so the built-in
-    /// animation returns only after a replug or when the app quits). The saved run mode is applied to every live session the
+    /// process stopped in one parallel batch, handing the modules back
+    /// (`StopKind::HandBack`: their built-in animation returns). The saved run mode is applied to every live session the
     /// same way (`sync_run_mode`), so a mode switch reaches running modules
     /// without the user stopping anything. Called after Settings saved or
     /// failed to read the setting; a reconnecting automatic session also
@@ -2387,9 +2519,15 @@ impl<R: Runner> Driver<R> {
     }
 
     fn execute(&mut self, index: usize, mut actions: Vec<Action>, now_ms: u64) {
-        // A start recurses into `Started`; the state it replaces is emitted
-        // first so events stay in order.
-        actions.sort_by_key(|action| matches!(action, Action::StartService { .. }));
+        // A start recurses into `Started`, and a failed re-enumeration into
+        // `ReenumerateFailed`; the state they replace is emitted first so
+        // events stay in order.
+        actions.sort_by_key(|action| {
+            matches!(
+                action,
+                Action::StartService { .. } | Action::Reenumerate { .. }
+            )
+        });
         for action in actions {
             match action {
                 Action::Emit(state) => self.runner.emit(&state),
@@ -2405,9 +2543,21 @@ impl<R: Runner> Driver<R> {
                         self.apply(index, Event::ModeSwitchFailed, now_ms);
                     }
                 }
-                Action::StopService { service_id } => match &mut self.deferred_stops {
-                    Some(stops) => stops.push(service_id),
-                    None => self.runner.stop(&service_id),
+                Action::Reenumerate { path_hex } => {
+                    let result = self.runner.reenumerate(&path_hex);
+                    eprintln!(
+                        "re-enumerating the module at {path_hex} after it ignored software mode: {}",
+                        result
+                            .as_ref()
+                            .map_or_else(String::as_str, |()| "requested")
+                    );
+                    if let Err(error) = result {
+                        self.apply(index, Event::ReenumerateFailed { error }, now_ms);
+                    }
+                }
+                Action::StopService { service_id, kind } => match &mut self.deferred_stops {
+                    Some(stops) => stops.push((service_id, kind)),
+                    None => self.runner.stop(&service_id, kind),
                 },
                 Action::StartService { .. } if self.is_closed() => {
                     // App exit began: nothing was spawned, so the session
@@ -2869,6 +3019,12 @@ pub mod fake {
     pub struct FakeRunner {
         pub starts: Vec<StartRequest>,
         pub stops: Vec<String>,
+        /// Every stop with its kind, in order.
+        pub stop_kinds: Vec<(String, StopKind)>,
+        /// Every re-enumeration asked for (the path), in order.
+        pub reenumerated: Vec<String>,
+        /// What `reenumerate` fails with; `None` succeeds.
+        pub reenumerate_error: Option<String>,
         pub emitted: Vec<SessionState>,
         /// Processes that were started and have not exited yet.
         pub alive: BTreeSet<String>,
@@ -2962,13 +3118,26 @@ pub mod fake {
             Ok(id)
         }
 
-        fn stop(&mut self, service_id: &str) {
+        fn stop(&mut self, service_id: &str, kind: StopKind) {
             self.stops.push(service_id.into());
+            self.stop_kinds.push((service_id.into(), kind));
         }
 
-        fn stop_many(&mut self, service_ids: &[String]) {
-            self.batches.push(service_ids.to_vec());
-            self.stops.extend_from_slice(service_ids);
+        fn stop_many(&mut self, stops: &[(String, StopKind)]) {
+            self.batches
+                .push(stops.iter().map(|(id, _)| id.clone()).collect());
+            for (id, kind) in stops {
+                self.stops.push(id.clone());
+                self.stop_kinds.push((id.clone(), *kind));
+            }
+        }
+
+        fn reenumerate(&mut self, path_hex: &str) -> Result<(), String> {
+            self.reenumerated.push(path_hex.into());
+            match &self.reenumerate_error {
+                Some(error) => Err(error.clone()),
+                None => Ok(()),
+            }
         }
 
         fn closed(&self) -> bool {
@@ -3413,10 +3582,111 @@ mod tests {
         )
     }
 
+    /// A session whose first run was ignored, re-enumerated and ignored again on its new path `/b`: it now waits for
+    /// a replug.
+    fn waiting_for_replug(execute: bool) -> (Driver<FakeRunner>, String) {
+        let (mut driver, id) = running(execute);
+        exit(&mut driver, &id, &ignored(), 1_000);
+        driver.inventory(vec![dial("/b")], 1_300);
+        driver.tick(1_300 + REENUMERATE_SETTLE_MS);
+        exit(&mut driver, &sid("/b"), &ignored(), 2_000);
+        (driver, id)
+    }
+
     #[test]
-    fn an_ignored_software_mode_command_waits_for_a_replug_instead_of_retrying() {
+    fn an_ignored_software_mode_command_re_enumerates_the_module_once_and_continues_the_run() {
+        for execute in [false, true] {
+            let (mut driver, id) = running(execute);
+            exit(&mut driver, &id, &ignored(), 1_000);
+            assert_eq!(driver.runner().reenumerated, [dial("/a").path_hex]);
+            let state = last(&mut driver);
+            assert_eq!(
+                (
+                    state.phase,
+                    state.reason,
+                    state.attempt,
+                    state.next_attempt_in_ms
+                ),
+                (Phase::Reconnecting, None, 0, Some(REENUMERATE_TIMEOUT_MS))
+            );
+            assert_eq!(state.detail.as_deref(), Some(REENUMERATING));
+            // The module drops out and comes back on a new path: the same start goes on, an executing one without
+            // asking again, and nothing counts as a crash.
+            driver.inventory(vec![], 1_100);
+            assert_eq!(phase(&mut driver), Phase::Reconnecting);
+            driver.inventory(vec![dial("/b")], 1_300);
+            // A short settle first, so the service's own enumeration has the new path too.
+            assert_eq!(starts(&mut driver), 1);
+            assert_eq!(phase(&mut driver), Phase::Reconnecting);
+            driver.tick(1_300 + REENUMERATE_SETTLE_MS);
+            assert_eq!(starts(&mut driver), 2);
+            let restarted = &driver.runner().starts[1];
+            assert_eq!(
+                (restarted.path_hex.as_str(), restarted.execute),
+                (dial("/b").path_hex.as_str(), execute)
+            );
+            let state = last(&mut driver);
+            assert_eq!(
+                (state.phase, state.reason, state.attempt, state.detail),
+                (Phase::Running, None, 0, None)
+            );
+            assert_eq!(state.session_id, id);
+            // The deadline tick that is still scheduled changes nothing.
+            driver.tick(1_000 + REENUMERATE_TIMEOUT_MS);
+            assert_eq!(starts(&mut driver), 2);
+            assert_eq!(phase(&mut driver), Phase::Running);
+        }
+    }
+
+    #[test]
+    fn a_module_back_on_the_same_path_after_it_was_gone_counts_as_back() {
         let (mut driver, id) = running(false);
         exit(&mut driver, &id, &ignored(), 1_000);
+        driver.inventory(vec![], 1_100);
+        driver.inventory(vec![dial("/a")], 1_300);
+        driver.tick(1_300 + REENUMERATE_SETTLE_MS);
+        assert_eq!(starts(&mut driver), 2);
+        assert_eq!(phase(&mut driver), Phase::Running);
+    }
+
+    #[test]
+    fn a_transient_failure_of_the_first_start_after_re_enumeration_retries_without_asking_again() {
+        let (mut driver, id) = running(true);
+        exit(&mut driver, &id, &ignored(), 1_000);
+        driver.inventory(vec![dial("/b")], 1_300);
+        driver.tick(1_600);
+        assert_eq!(starts(&mut driver), 2);
+        // The service's own enumeration lagged: a transient error before `service_start`.
+        refuse(
+            &mut driver,
+            &sid("/b"),
+            "masterhub-service: device path is not in the current inventory\n",
+            1_700,
+        );
+        let state = last(&mut driver);
+        assert_eq!(
+            (state.phase, state.attempt, state.next_attempt_in_ms),
+            (Phase::Reconnecting, 1, Some(backoff_ms(1)))
+        );
+        // The retry starts executing without a new confirmation, and still counts as the re-enumerated attempt.
+        driver.tick(1_700 + backoff_ms(1));
+        assert_eq!(starts(&mut driver), 3);
+        assert!(driver.runner().starts[2].execute);
+        assert_eq!(phase(&mut driver), Phase::Running);
+        // Ignored once it ran: no second re-enumeration, the replug wait.
+        exit(&mut driver, &sid("/b"), &ignored(), 3_000);
+        assert_eq!(driver.runner().reenumerated.len(), 1);
+        let state = last(&mut driver);
+        assert_eq!(
+            (state.phase, state.detail.as_deref()),
+            (Phase::WaitingForDevice, Some(SOFTWARE_MODE_IGNORED))
+        );
+    }
+
+    #[test]
+    fn an_ignored_command_after_the_re_enumeration_waits_for_a_replug() {
+        let (mut driver, id) = waiting_for_replug(false);
+        assert_eq!(driver.runner().reenumerated.len(), 1);
         let state = last(&mut driver);
         assert_eq!(
             (
@@ -3433,49 +3703,81 @@ mod tests {
             )
         );
         assert_eq!(state.detail.as_deref(), Some(SOFTWARE_MODE_IGNORED));
-        assert_eq!(driver.next_due(), None);
         // No timer and no unchanged inventory starts it again.
         driver.tick(60_000);
-        driver.inventory(vec![dial("/a")], 61_000);
-        assert_eq!(starts(&mut driver), 1);
+        driver.inventory(vec![dial("/b")], 61_000);
+        assert_eq!(starts(&mut driver), 2);
         assert_eq!(phase(&mut driver), Phase::WaitingForDevice);
         // A replug brings the module back on another path, where it takes software mode again.
-        driver.inventory(vec![dial("/b")], 62_000);
-        assert_eq!(starts(&mut driver), 2);
-        assert_eq!(driver.runner().starts[1].path_hex, dial("/b").path_hex);
+        driver.inventory(vec![dial("/c")], 62_000);
+        assert_eq!(starts(&mut driver), 3);
         let state = last(&mut driver);
         assert_eq!((state.phase, state.detail), (Phase::Running, None));
         assert_eq!(state.session_id, id);
     }
 
     #[test]
-    fn a_module_that_ignored_software_mode_starts_again_once_it_was_gone() {
+    fn a_failed_re_enumeration_waits_for_a_replug_at_once() {
+        let (mut driver, id) = running(false);
+        driver.runner().reenumerate_error = Some("could not open the USB device".into());
+        exit(&mut driver, &id, &ignored(), 1_000);
+        let state = last(&mut driver);
+        assert_eq!(
+            (state.phase, state.reason, state.next_attempt_in_ms),
+            (Phase::WaitingForDevice, Some(Reason::ServiceExited), None)
+        );
+        let detail = state.detail.unwrap();
+        assert!(detail.starts_with(SOFTWARE_MODE_IGNORED), "{detail}");
+        assert!(detail.contains("could not open the USB device"), "{detail}");
+        driver.tick(1_000 + REENUMERATE_TIMEOUT_MS);
+        assert_eq!(starts(&mut driver), 1);
+    }
+
+    #[test]
+    fn a_module_that_does_not_come_back_in_time_waits_for_a_replug() {
         let (mut driver, id) = running(false);
         exit(&mut driver, &id, &ignored(), 1_000);
-        driver.inventory(vec![], 2_000);
+        driver.tick(1_000 + REENUMERATE_TIMEOUT_MS - 1);
+        assert_eq!(phase(&mut driver), Phase::Reconnecting);
+        driver.tick(1_000 + REENUMERATE_TIMEOUT_MS);
+        let state = last(&mut driver);
+        assert_eq!(
+            (state.phase, state.reason, state.detail.as_deref()),
+            (
+                Phase::WaitingForDevice,
+                Some(Reason::ServiceExited),
+                Some(SOFTWARE_MODE_IGNORED)
+            )
+        );
+        assert_eq!(starts(&mut driver), 1);
+    }
+
+    #[test]
+    fn a_module_that_ignored_software_mode_starts_again_once_it_was_gone() {
+        let (mut driver, _) = waiting_for_replug(false);
+        driver.inventory(vec![], 3_000);
         let state = last(&mut driver);
         assert_eq!(
             (state.phase, state.reason, state.detail),
             (Phase::WaitingForDevice, Some(Reason::DeviceRemoved), None)
         );
         // Back on the same path after it was gone: a replug all the same.
-        driver.inventory(vec![dial("/a")], 3_000);
-        assert_eq!(starts(&mut driver), 2);
+        driver.inventory(vec![dial("/b")], 4_000);
+        assert_eq!(starts(&mut driver), 3);
         assert_eq!(phase(&mut driver), Phase::Running);
     }
 
     #[test]
-    fn an_executing_session_that_ignored_software_mode_needs_confirmation_after_the_replug() {
-        let (mut driver, id) = running(true);
-        exit(&mut driver, &id, &ignored(), 1_000);
+    fn an_executing_session_that_waited_for_a_replug_needs_confirmation_after_it() {
+        let (mut driver, _) = waiting_for_replug(true);
         assert_eq!(phase(&mut driver), Phase::WaitingForDevice);
-        driver.inventory(vec![dial("/b")], 2_000);
+        driver.inventory(vec![dial("/c")], 3_000);
         let state = last(&mut driver);
         assert_eq!(
             (state.phase, state.detail),
             (Phase::NeedsConfirmation, None)
         );
-        assert_eq!(starts(&mut driver), 1);
+        assert_eq!(starts(&mut driver), 2);
     }
 
     #[test]
@@ -3483,6 +3785,7 @@ mod tests {
         let (mut driver, id) = running(false);
         driver.inventory(vec![], 500);
         exit(&mut driver, &id, &ignored(), 1_000);
+        assert!(driver.runner().reenumerated.is_empty());
         let state = last(&mut driver);
         assert_eq!(
             (state.phase, state.reason, state.attempt, state.detail),
@@ -3501,34 +3804,65 @@ mod tests {
 
     #[test]
     fn a_module_gone_and_back_during_the_wait_starts_exactly_once() {
-        let (mut driver, id) = running(false);
-        exit(&mut driver, &id, &ignored(), 1_000);
-        driver.inventory(vec![], 2_000);
-        driver.inventory(vec![dial("/a")], 3_000);
-        driver.inventory(vec![dial("/a")], 4_000);
+        let (mut driver, _) = waiting_for_replug(false);
+        driver.inventory(vec![], 3_000);
+        driver.inventory(vec![dial("/b")], 4_000);
+        driver.inventory(vec![dial("/b")], 5_000);
         driver.tick(60_000);
-        assert_eq!(starts(&mut driver), 2);
+        assert_eq!(starts(&mut driver), 3);
         assert_eq!(phase(&mut driver), Phase::Running);
     }
 
     #[test]
-    fn a_wake_gives_a_module_that_ignored_software_mode_one_new_try() {
-        let (mut driver, id) = running(false);
-        exit(&mut driver, &id, &ignored(), 1_000);
-        driver.power(PowerEvent::Suspend, 2_000);
+    fn a_wake_gives_a_module_that_ignored_software_mode_a_new_try_and_a_new_re_enumeration() {
+        let (mut driver, _) = waiting_for_replug(false);
+        driver.power(PowerEvent::Suspend, 3_000);
         driver.power(PowerEvent::Resume, 10_000);
         driver.tick(10_000 + SETTLE_DELAY_MS);
-        assert_eq!(starts(&mut driver), 2);
-        // Ignored again: back to waiting, still without a timer.
-        let restarted = sid("/a");
-        exit(&mut driver, &restarted, &ignored(), 13_000);
+        assert_eq!(starts(&mut driver), 3);
+        // Ignored again: one new re-enumeration for this new try, and no crash count.
+        exit(&mut driver, &sid("/b"), &ignored(), 13_000);
+        assert_eq!(driver.runner().reenumerated.len(), 2);
+        let state = last(&mut driver);
+        assert_eq!((state.phase, state.attempt), (Phase::Reconnecting, 0));
+        driver.tick(13_000 + REENUMERATE_TIMEOUT_MS);
         let state = last(&mut driver);
         assert_eq!(
             (state.phase, state.attempt, state.next_attempt_in_ms),
             (Phase::WaitingForDevice, 0, None)
         );
         driver.tick(100_000);
-        assert_eq!(starts(&mut driver), 2);
+        assert_eq!(starts(&mut driver), 3);
+    }
+
+    #[test]
+    fn user_stops_hand_the_module_back_and_automatic_stops_blank_it() {
+        // Stop (by session or by process id): hand back.
+        let (mut driver, id) = running(false);
+        driver.stop(&id, true, 1);
+        assert_eq!(
+            driver.runner().stop_kinds,
+            [(id.clone(), StopKind::HandBack)]
+        );
+        // A run no session manages, stopped by its id: hand back.
+        let mut driver = Driver::new(FakeRunner::default());
+        driver.stop("service:41", false, 0);
+        assert_eq!(
+            driver.runner().stop_kinds,
+            [("service:41".to_string(), StopKind::HandBack)]
+        );
+        // Sleep, a demo and a profile switch restart the run later: blank.
+        let (mut driver, id) = running(false);
+        driver.power(PowerEvent::Suspend, 1);
+        assert_eq!(driver.runner().stop_kinds, [(id.clone(), StopKind::Blank)]);
+        let (mut driver, id) = running(false);
+        driver.hold(&dial("/a").path_hex, 1);
+        assert_eq!(driver.runner().stop_kinds, [(id.clone(), StopKind::Blank)]);
+        let (mut driver, id) = running(false);
+        driver
+            .switch_profile(&id, "Browser".into(), renamed("Browser"), 1)
+            .unwrap();
+        assert_eq!(driver.runner().stop_kinds, [(id, StopKind::Blank)]);
     }
 
     #[test]
@@ -3802,8 +4136,8 @@ mod tests {
             fn start(&mut self, request: &StartRequest) -> Result<String, String> {
                 self.0.lock().unwrap().start(request)
             }
-            fn stop(&mut self, service_id: &str) {
-                self.0.lock().unwrap().stop(service_id)
+            fn stop(&mut self, service_id: &str, kind: StopKind) {
+                self.0.lock().unwrap().stop(service_id, kind)
             }
             fn emit(&mut self, state: &SessionState) {
                 self.0.lock().unwrap().emit(state)
@@ -5444,7 +5778,7 @@ mod tests {
             fn start(&mut self, _: &StartRequest) -> Result<String, String> {
                 unreachable!()
             }
-            fn stop(&mut self, _: &str) {}
+            fn stop(&mut self, _: &str, _: StopKind) {}
             fn emit(&mut self, _: &SessionState) {}
             fn enumerate(&mut self) -> Option<Vec<LiveDevice>> {
                 None
@@ -6432,6 +6766,11 @@ mod tests {
         driver.runner().display = BUILT_IN;
         driver.display_settings_changed(10);
         assert_eq!(driver.runner().batches, [vec![auto_id.clone()]]);
+        // The user's choice: the built-in animation comes back (stdin closed, not SIGINT).
+        assert_eq!(
+            driver.runner().stop_kinds.last(),
+            Some(&(auto_id.clone(), StopKind::HandBack))
+        );
         let state = last(&mut driver);
         assert_eq!(
             (state.session_id.as_str(), state.phase, state.reason),

@@ -14,12 +14,12 @@ const idleRunner = () => idleServiceState;
 // What each Module control value does, shown under the choice.
 export const moduleControlNotes: Record<ModuleControl, string> = {
   app: 'OpenStreamHub draws on the 15-key module and the dial, and starts a run on each module that is connected.',
-  built_in_animation: 'The 15-key module and the dial keep their built-in animation, and nothing starts on them by itself. Their keys and dial send no input unless you tick "Request device software mode" in the Run panel, nothing is drawn on their displays, and profiles with 15-key pages (folders) cannot run live.',
+  built_in_animation: 'The 15-key module and the dial get their built-in animation back (runs that started on them by themselves stop), and nothing starts on them by itself. Switching back to App takes them over again; on a Mac no replug is needed, since OpenStreamHub resets their USB connection when a module is still in its built-in mode. Their keys and dial send no input unless you tick "Request device software mode" in the Run panel, nothing is drawn on their displays, and profiles with 15-key pages (folders) cannot run live.',
 };
 // The details behind the App choice, folded away under it.
 export const moduleControlDetails = [
   'A run starts with the default profile below, otherwise the profile last run on that module, or a blank one.',
-  'The 15-key module and the dial use software mode and return to their built-in mode when a run stops normally or you quit. The knobs only have their input read.',
+  'The 15-key module and the dial use software mode. Stop, switching to Built-in animation and quitting give them their built-in animation back; a restart the app makes itself (after a crash, a profile or run-mode switch, sleep or a demo) shows black screens for a moment instead. The knobs only have their input read.',
   'What a press does, Live or Test, is the run mode in the header, not this setting.',
   'Stopping a run leaves the module alone until it is connected again or the app is opened again.',
   'Switching to App starts the connected modules; switching away stops the runs that started by themselves.',

@@ -357,6 +357,16 @@ describe('session manager', () => {
     session(t, 'waiting_for_device', { service_id: null, reason: 'service_exited', detail });
     expect(texts(t).at(-1)).toBe(`Waiting for m131e to reconnect (${detail})`);
   });
+  it('logs the reset of a module that was in its built-in mode quietly, as info', async () => {
+    const t = await started();
+    t.handlers['service://record']({ payload: { service_id: t.id, record: { type: 'service_end', reason: 'software_mode_ignored', error: 'the dial ignored the software-mode command' } } });
+    const detail = 'The module was in its built-in mode, so OpenStreamHub reset its USB connection; it reconnects in a moment.';
+    session(t, 'reconnecting', { service_id: null, detail });
+    session(t, 'running', { service_id: id2 });
+    expect(run(t).entries.slice(-3).map(entry => [entry.kind, entry.text])).toEqual([
+      ['info', 'The module was in its built-in mode and did not take the request to drive its screen.'],
+      ['info', `Reconnecting: ${detail}`], ['info', 'Reconnected']]);
+  });
   it('a refused start ends the run once, without reconnect attempts or the service sentence', async () => {
     const t = await started();
     const raw = 'masterhub-service: nested keypad profiles run live only with --display-sync (which requires --software-mode); in OpenStreamHub, set Module control to App in Settings';

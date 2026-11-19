@@ -126,7 +126,9 @@ function sessionEntry(previous: SessionInfo | undefined, next: SessionInfo, at: 
   switch (next.phase) {
     case 'suspended': return info(next.reason === 'sleep' || next.reason === null ? 'Mac went to sleep — actions paused' : `Paused: ${reasonLabels[next.reason]}`);
     case 'waiting_for_device': return info(`Waiting for ${next.module} to reconnect${next.detail ? ` (${clip(next.detail)})` : ''}`);
-    case 'reconnecting': return info(isProfileReason(next.reason) ? 'Restarting with the new profile' : next.reason === 'run_mode' ? 'Restarting: the run mode was switched' : `Reconnecting (attempt ${next.attempt}/${maxReconnectAttempts})`);
+    case 'reconnecting': return info(isProfileReason(next.reason) ? 'Restarting with the new profile' : next.reason === 'run_mode' ? 'Restarting: the run mode was switched'
+      // The app's own reset of a module that was in its built-in mode (session::REENUMERATING): not a crash retry.
+      : next.attempt === 0 && next.reason === null && next.detail ? `Reconnecting: ${clip(next.detail)}` : `Reconnecting (attempt ${next.attempt}/${maxReconnectAttempts})`);
     case 'needs_confirmation': return info(isProfileReason(next.reason) ? 'Paused for the new profile: confirm to resume actions' : 'Paused: confirm to resume actions');
     case 'stopped': {
       const text = `Paused: ${next.reason ? reasonLabels[next.reason] : 'ended'}${next.detail ? ` (${clip(next.detail)})` : ''}`;
@@ -297,6 +299,9 @@ export function summarizeRecord(record: unknown, at: number, execute = true): Ac
     case 'timer_alert_failed': return entry('action_failed', `Countdown alert failed (${describeAction(record.action)}): ${clip(str(record.error) ?? 'unknown error')}`);
     case 'timer_alert_warning': return entry('info', `Countdown alert warning (${describeAction(record.action)}): ${clip(str(record.warning) ?? 'no details')}`);
     case 'service_end': {
+      // The module was in its built-in mode: the session manager resets it and starts again, or asks for a replug, so
+      // this is a log line, not an error.
+      if (record.reason === 'software_mode_ignored') return entry('info', 'The module was in its built-in mode and did not take the request to drive its screen.');
       const error = str(record.error);
       if (error) return entry('error', `Service ended with an error: ${clip(error)}`);
       return entry('info', `Service ended (${str(record.reason) ?? 'finished'}).`);

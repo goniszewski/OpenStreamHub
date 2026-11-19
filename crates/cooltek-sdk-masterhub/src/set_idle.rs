@@ -53,7 +53,7 @@ impl SetIdleOutcome {
 
 /// Extracts the registry entry ID from a hidapi macOS path (`DevSrvsID:<decimal id>`).
 #[cfg_attr(not(any(target_os = "macos", test)), allow(dead_code))]
-fn parse_dev_srvs_id(path: &CStr) -> Option<u64> {
+pub(crate) fn parse_dev_srvs_id(path: &CStr) -> Option<u64> {
     path.to_str().ok()?.strip_prefix("DevSrvsID:")?.parse().ok()
 }
 

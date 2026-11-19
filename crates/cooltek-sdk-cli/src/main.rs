@@ -142,7 +142,8 @@ enum Command {
         #[command(subcommand)]
         command: DialCommand,
     },
-    /// Prepare M4315 key images and JPEG packet plans offline, without HID.
+    /// Prepare M4315 key images and JPEG packet plans offline, without HID, or
+    /// preview the keypad mode command and explicitly send it to a selected keypad.
     Keypad {
         #[command(subcommand)]
         command: KeypadCommand,
@@ -238,7 +239,7 @@ enum LedCommand {
 }
 
 #[derive(Clone, Copy, ValueEnum)]
-enum DialMode {
+enum ModeArg {
     Hardware,
     Software,
 }
@@ -275,7 +276,7 @@ enum DialCommand {
     PrepareImage(ImagePreparationArgs),
     /// Preview mode control; --path-hex explicitly sends the command.
     Mode {
-        mode: DialMode,
+        mode: ModeArg,
         #[arg(long, value_parser = parse_path)]
         path_hex: Option<DevicePath>,
         /// After sending, read report 0x03 back and print its length: a full
@@ -329,6 +330,16 @@ enum DialCommand {
 enum KeypadCommand {
     /// Convert a static PNG/JPEG to a 72x72 baseline JFIF JPEG, without HID.
     PrepareImage(ImagePreparationArgs),
+    /// Preview mode control; --path-hex explicitly sends the command.
+    Mode {
+        mode: ModeArg,
+        #[arg(long, value_parser = parse_path)]
+        path_hex: Option<DevicePath>,
+        /// After sending, read report 0x03 back and print its length: a full
+        /// reply means the keypad took the command, an empty one that it ignored it.
+        #[arg(long, requires = "path_hex")]
+        read_back: bool,
+    },
     /// Plan a 72x72 baseline JFIF JPEG for one M4315 key, without HID.
     Jpeg {
         file: PathBuf,
@@ -630,12 +641,16 @@ fn open_dial(path: &[u8]) -> Result<HidDevice, Box<dyn Error>> {
     Ok(registry.open(selected)?)
 }
 
+/// Opens the module at a HID path, refusing a path of another kind.
+type OpenModule = fn(&[u8]) -> Result<HidDevice, Box<dyn Error>>;
+
 fn feature_command(
     report: [u8; dial::FEATURE_REPORT_LENGTH],
     path: Option<DevicePath>,
+    open: OpenModule,
 ) -> Result<(), Box<dyn Error>> {
     let sent = if let Some(path) = path {
-        open_dial(&path)?.send_feature_report(&report)?;
+        open(&path)?.send_feature_report(&report)?;
         true
     } else {
         false
@@ -645,6 +660,38 @@ fn feature_command(
         "source": "software_derived",
         "raw_hex": encode_hex(&report),
     }))
+}
+
+/// Previews a mode report, or sends it to the selected module and, with
+/// `read_back`, prints what the module answered on report 0x03.
+fn mode_command(
+    report: [u8; dial::FEATURE_REPORT_LENGTH],
+    path: Option<DevicePath>,
+    read_back: bool,
+    open: OpenModule,
+) -> Result<(), Box<dyn Error>> {
+    let Some(path) = path else {
+        return feature_command(report, None, open);
+    };
+    if !read_back {
+        return feature_command(report, Some(path), open);
+    }
+    let reply = cooltek_sdk_masterhub::command_with_reply(&open(&path)?, &report)?;
+    print_json(&json!({
+        "type": "feature_sent",
+        "source": "hardware",
+        "raw_hex": encode_hex(&report),
+        "reply_report_id": cooltek_sdk_masterhub::COMMAND_REPLY_REPORT_ID,
+        "reply_length": reply.len(),
+        "reply_hex": encode_hex(&reply),
+    }))
+}
+
+fn open_keypad(path: &[u8]) -> Result<HidDevice, Box<dyn Error>> {
+    let registry = DeviceRegistry::new()?;
+    let devices = registry.devices();
+    let selected = select_keypad(&devices, path)?;
+    Ok(registry.open(selected)?)
 }
 
 fn read_bounded(path: &Path, limit: usize) -> Result<Vec<u8>, Box<dyn Error>> {
@@ -667,29 +714,17 @@ fn dial_command(command: DialCommand) -> Result<(), Box<dyn Error>> {
             mode,
             path_hex,
             read_back,
-        } => {
-            let report = dial::software_mode_report(matches!(mode, DialMode::Software));
-            match path_hex {
-                Some(path) if read_back => {
-                    let reply =
-                        cooltek_sdk_masterhub::command_with_reply(&open_dial(&path)?, &report)?;
-                    print_json(&json!({
-                        "type": "feature_sent",
-                        "source": "hardware",
-                        "raw_hex": encode_hex(&report),
-                        "reply_report_id": cooltek_sdk_masterhub::COMMAND_REPLY_REPORT_ID,
-                        "reply_length": reply.len(),
-                        "reply_hex": encode_hex(&reply),
-                    }))
-                }
-                path => feature_command(report, path),
-            }
-        }
+        } => mode_command(
+            dial::software_mode_report(matches!(mode, ModeArg::Software)),
+            path_hex,
+            read_back,
+            open_dial,
+        ),
         DialCommand::Backlight { value, path_hex } => {
-            feature_command(dial::backlight_report(value)?, path_hex)
+            feature_command(dial::backlight_report(value)?, path_hex, open_dial)
         }
         DialCommand::Color { channels, path_hex } => {
-            feature_command(dial::color_report(channels), path_hex)
+            feature_command(dial::color_report(channels), path_hex, open_dial)
         }
         DialCommand::Info { path_hex } => {
             let device = open_dial(&path_hex)?;
@@ -838,6 +873,16 @@ fn keypad_command(command: KeypadCommand) -> Result<(), Box<dyn Error>> {
         KeypadCommand::PrepareImage(arguments) => {
             prepare_image_command(arguments, ImagePreparationTarget::Keypad)
         }
+        KeypadCommand::Mode {
+            mode,
+            path_hex,
+            read_back,
+        } => mode_command(
+            keypad::software_mode_report(matches!(mode, ModeArg::Software)),
+            path_hex,
+            read_back,
+            open_keypad,
+        ),
         KeypadCommand::Jpeg {
             file,
             key_index,
@@ -1122,6 +1167,17 @@ fn select_dial<'a>(
     let selected = select_device(devices, path, false)?;
     if ModuleKind::from_ids(selected.vendor_id, selected.product_id) != Some(ModuleKind::M131E) {
         return Err("dial commands require an M131E (2516:0206 or 2516:9994)".into());
+    }
+    Ok(selected)
+}
+
+fn select_keypad<'a>(
+    devices: &'a [ModuleIdentity],
+    path: &[u8],
+) -> Result<&'a ModuleIdentity, Box<dyn Error>> {
+    let selected = select_device(devices, path, false)?;
+    if ModuleKind::from_ids(selected.vendor_id, selected.product_id) != Some(ModuleKind::M4315) {
+        return Err("keypad commands require an M4315 (2516:01fe or 2516:9997)".into());
     }
     Ok(selected)
 }
@@ -1450,25 +1506,46 @@ mod tests {
     }
 
     #[test]
-    fn dial_mode_reads_back_only_from_a_selected_dial() {
-        let parse = |arguments: &[&str]| {
-            Cli::try_parse_from(
-                ["masterhub-diag", "dial", "mode", "software"]
-                    .into_iter()
-                    .chain(arguments.iter().copied()),
-            )
-        };
-        let Command::Dial {
-            command: DialCommand::Mode { read_back, .. },
-        } = parse(&["--path-hex", "61ff", "--read-back"])
-            .unwrap()
-            .command
-        else {
-            panic!("expected dial mode");
-        };
-        assert!(read_back);
-        // A preview sends nothing, so there is nothing to read back.
-        assert!(parse(&["--read-back"]).is_err());
+    fn mode_commands_read_back_only_from_a_selected_module() {
+        for module in ["dial", "keypad"] {
+            let parse = |arguments: &[&str]| {
+                Cli::try_parse_from(
+                    ["masterhub-diag", module, "mode", "software"]
+                        .into_iter()
+                        .chain(arguments.iter().copied()),
+                )
+            };
+            let read_back = match parse(&["--path-hex", "61ff", "--read-back"])
+                .unwrap()
+                .command
+            {
+                Command::Dial {
+                    command: DialCommand::Mode { read_back, .. },
+                }
+                | Command::Keypad {
+                    command: KeypadCommand::Mode { read_back, .. },
+                } => read_back,
+                _ => panic!("expected {module} mode"),
+            };
+            assert!(read_back);
+            assert!(parse(&[]).is_ok());
+            // A preview sends nothing, so there is nothing to read back.
+            assert!(parse(&["--read-back"]).is_err());
+        }
+    }
+
+    #[test]
+    fn keypad_selection_accepts_both_m4315_product_ids_and_nothing_else() {
+        for product_id in [0x01fe, 0x9997] {
+            let devices = [device(b"keys", product_id, 0)];
+            assert_eq!(
+                select_keypad(&devices, b"keys").unwrap().product_id,
+                product_id
+            );
+        }
+        let error = select_keypad(&[device(b"dial", 0x0206, 0)], b"dial").unwrap_err();
+        assert!(error.to_string().contains("require an M4315"));
+        assert!(select_keypad(&[device(b"keys", 0x01fe, 0)], b"absent").is_err());
     }
 
     #[test]

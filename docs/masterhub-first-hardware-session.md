@@ -220,10 +220,12 @@ Writes `03 49 01` (dial) or `03 3a 01` (keys), then attempts `03 49 00` or `03 3
 
 If a module does not return to hardware mode, run `masterhub-diag dial mode hardware --path-hex DIAL_PATH_HEX` (WRITE), then replug; log it.
 
-To check whether the dial took a mode command, add `--read-back`: after the SET it reads report `0x03` and prints `reply_length` and `reply_hex`. A 32-byte reply means the dial took the command; 0 bytes means it ignored it (for example software mode asked for again after hardware mode was restored, without a replug). On Windows the HID stack reports that empty reply as a failed GET, and the SDK (`command_with_reply`) reads it as 0 bytes there; on other systems a failed GET is still an error.
+To check whether the dial or keypad took a mode command, add `--read-back`: after the SET it reads report `0x03` and prints `reply_length` and `reply_hex`. A 32-byte reply means the module took the command; 0 bytes means it ignored it (for example software mode asked for again after hardware mode was restored, without a replug). On Windows the HID stack reports that empty reply as a failed GET, and the SDK (`command_with_reply`) reads it as 0 bytes there; on other systems a failed GET is still an error.
 
 ```sh
 masterhub-diag dial mode software --path-hex DIAL_PATH_HEX --read-back   # WRITE, then QUERY 0x03
+masterhub-diag keypad mode software --path-hex KEYS_PATH_HEX --read-back # WRITE, then QUERY 0x03
+masterhub-diag keypad mode hardware --path-hex KEYS_PATH_HEX            # WRITE
 ```
 
 #### 6b. Dial color channel order and backlight (WRITE, dial in software mode)

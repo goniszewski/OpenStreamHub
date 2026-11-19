@@ -125,7 +125,7 @@ function sessionEntry(previous: SessionInfo | undefined, next: SessionInfo, at: 
   const info = (text: string): ActivityEntry => ({ kind: 'info', text, at });
   switch (next.phase) {
     case 'suspended': return info(next.reason === 'sleep' || next.reason === null ? 'Mac went to sleep — actions paused' : `Paused: ${reasonLabels[next.reason]}`);
-    case 'waiting_for_device': return info(`Waiting for ${next.module} to reconnect`);
+    case 'waiting_for_device': return info(`Waiting for ${next.module} to reconnect${next.detail ? ` (${clip(next.detail)})` : ''}`);
     case 'reconnecting': return info(isProfileReason(next.reason) ? 'Restarting with the new profile' : next.reason === 'run_mode' ? 'Restarting: the run mode was switched' : `Reconnecting (attempt ${next.attempt}/${maxReconnectAttempts})`);
     case 'needs_confirmation': return info(isProfileReason(next.reason) ? 'Paused for the new profile: confirm to resume actions' : 'Paused: confirm to resume actions');
     case 'stopped': {

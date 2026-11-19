@@ -38,6 +38,13 @@ pub fn write_dial_lighting<T: ReportTransport + ?Sized>(
 }
 
 /// Hands one dial back to its built-in mode, which returns its own animation.
+///
+/// On purpose: that is what a reset is for. A dial handed back this way ignores
+/// every later software-mode command until it is unplugged (or loses power), so
+/// the next run on it ends at once with the service's "ignored the
+/// software-mode command" error, and its session waits (showing
+/// `session::SOFTWARE_MODE_IGNORED`) until a replug, a wake, or Stop then
+/// Start; only the replug lets the run enter software mode again.
 pub fn restore_dial_mode<T: ReportTransport + ?Sized>(transport: &T) -> Result<(), String> {
     dial::set_software_mode(transport, false)
         .map_err(|error| format!("could not return the dial to its built-in mode: {error}"))
@@ -112,7 +119,8 @@ pub fn apply_dial_lighting(
 }
 
 /// Returns every target dial to its built-in mode, in order, stopping at the
-/// first failure. Returns the number of dials reset.
+/// first failure. Returns the number of dials reset. A later run on a reset
+/// dial needs a replug first (see [`restore_dial_mode`]).
 pub fn reset_dial_lighting(registry: &DeviceRegistry, targets: &[String]) -> Result<usize, String> {
     let dials = open_dials(registry, targets)?;
     for (device, label) in &dials {

@@ -177,6 +177,23 @@ pub fn set_software_mode<T: ReportTransport + ?Sized>(
     transport.send_feature_report(&software_mode_report(enabled))
 }
 
+/// Enters software mode like [`set_software_mode`], then reads report `0x03`
+/// back with [`crate::command_with_reply`] and returns the reply.
+///
+/// A keypad that takes the command answers with a full 32-byte report. One
+/// that ignores it answers with zero bytes: a keypad handed back to hardware
+/// mode ignores every later software-mode command until it is unplugged or
+/// loses power (docs/masterhub-hardware-results.md, 19 November 2026).
+///
+/// # Errors
+/// A failed SET, or a failed read-back as described in
+/// [`crate::command_with_reply`].
+pub fn enter_software_mode_with_reply<T: ReportTransport + ?Sized>(
+    transport: &T,
+) -> HidResult<Vec<u8>> {
+    crate::transport::command_with_reply(transport, &software_mode_report(true))
+}
+
 #[cfg(test)]
 mod tests {
     use std::{cell::RefCell, collections::VecDeque};

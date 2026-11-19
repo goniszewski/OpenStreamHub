@@ -61,6 +61,13 @@
 //! shown once. A module that is merely not available yet (the service could
 //! not find its path or HIDAPI could not open it) keeps the retry. A module
 //! another program holds open (`IN_USE`) is a refusal too, never a retry.
+//! A keypad or dial that ignored the software-mode command (it was handed back
+//! to hardware mode earlier and keeps it until it is replugged) is never
+//! retried on a timer either: the session waits, showing
+//! `SOFTWARE_MODE_IGNORED`, until a replug (the module comes back on another
+//! path, or goes away and returns), a wake (or the end of a demo), which
+//! gives it one new try, or Stop then Start (Start alone is refused while the
+//! session exists).
 //!
 //! Automatic starts: while module control is `App`, the driver itself starts
 //! a session on every connected control module (M4315, M131E, M003K, M005S
@@ -322,7 +329,8 @@ pub enum Event {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Action {
-    /// SIGINT path of `Services::stop`; the service restores hardware mode.
+    /// SIGINT path of `Services::stop`. A software-mode run blanks its screens and stays in software mode
+    /// (`--blank-on-stop`), so the next run on the module can enter it again; other runs just end.
     StopService {
         service_id: String,
     },
@@ -396,6 +404,10 @@ pub struct Session {
     /// The running process takes mode switches over its control channel, so a switch changes it in place instead of
     /// restarting it. Set when the process is ready, from what the runner supports; false in every other state.
     live_control: bool,
+    /// The last process ended because the module ignored the software-mode command. No process starts on the
+    /// path it was seen at until the module is replugged (seen on another path, or gone), or an interruption
+    /// (`interrupt`) allows one new try.
+    awaits_replug: bool,
 }
 
 fn blank_to_none(serial: Option<&str>) -> Option<String> {
@@ -479,6 +491,18 @@ const IN_USE_ERRORS: [&str; 2] = ["0xe00002c5", "exclusive access"];
 /// for a notice.
 pub const IN_USE: &str = "Another program is using this module. Quit it, then reconnect the module or start the profile again.";
 
+/// The session detail for a keypad or dial that ignored the software-mode
+/// command. The service says the same in its own words.
+pub const SOFTWARE_MODE_IGNORED: &str = "The module did not take the request to let OpenStreamHub drive its screen: it was handed back to its built-in mode earlier and keeps it until it is unplugged. Unplug the module and plug it back in; the session then starts again on its own (Stop then Start does not help without the replug).";
+
+/// Whether the process ended because its module ignored the software-mode
+/// command (the service's error names it).
+fn software_mode_ignored(stderr_tail: &str) -> bool {
+    last_line(stderr_tail).is_some_and(|line| {
+        line.contains(cooltek_sdk_cli::live_runtime::SOFTWARE_MODE_IGNORED_TEXT)
+    })
+}
+
 /// Whether a pre-start exit means another program holds the module open.
 fn in_use(stderr_tail: &str) -> bool {
     last_line(stderr_tail).is_some_and(|line| {
@@ -539,6 +563,7 @@ impl Session {
             held: false,
             held_restart: false,
             live_control: false,
+            awaits_replug: false,
         };
         let mut actions = Vec::new();
         session.reconcile(now_ms, &mut actions);
@@ -642,6 +667,8 @@ impl Session {
         self.detail = None;
         self.retry_at = None;
         self.confirmed = false;
+        // A wake or a demo may have reset the module, so it gets one new try.
+        self.awaits_replug = false;
     }
 
     fn apply(&mut self, event: Event, now_ms: u64, actions: &mut Vec<Action>) {
@@ -697,6 +724,16 @@ impl Session {
                     return;
                 }
                 self.confirmed = false;
+                // The module ignored the software-mode command: the same
+                // module refuses it again until it is replugged, so the
+                // session waits for that instead of retrying on a timer.
+                if software_mode_ignored(&stderr_tail) && self.find_device().is_ok() {
+                    self.reason = Some(Reason::ServiceExited);
+                    self.detail = Some(SOFTWARE_MODE_IGNORED.into());
+                    self.retry_at = None;
+                    self.awaits_replug = true;
+                    return;
+                }
                 // A setup refusal: the process exited with an error before it
                 // wrote `service_start`, while its module is still present
                 // and was not merely unavailable. The same arguments would be
@@ -853,8 +890,10 @@ impl Session {
                 self.settle_until = None;
             }
             if self.asleep || self.held || settling.is_some() {
-                // Sleep restores hardware mode through the service's SIGINT
-                // path; a wake seen without a prior suspend restarts cleanly.
+                // Sleep stops the process through the service's SIGINT path
+                // (a software-mode run blanks its screens and stays in
+                // software mode); a wake seen without a prior suspend
+                // restarts cleanly.
                 self.stop_process(actions);
                 self.phase = Phase::Suspended;
                 if let Some(until) = settling {
@@ -880,7 +919,12 @@ impl Session {
                 }
             } else {
                 match self.find_device() {
+                    // Still on the path where it ignored software mode: not replugged yet.
+                    Ok(path_hex) if self.awaits_replug && path_hex == self.path_hex => {
+                        self.phase = Phase::WaitingForDevice;
+                    }
                     Err(detail) => {
+                        self.awaits_replug = false;
                         self.phase = Phase::WaitingForDevice;
                         if self.reason == Some(Reason::ServiceExited) {
                             self.reason = Some(Reason::DeviceRemoved);
@@ -889,6 +933,11 @@ impl Session {
                     }
                     Ok(path_hex) => {
                         self.path_hex = path_hex;
+                        // Back on another path: replugged, so it takes software mode again.
+                        if self.awaits_replug {
+                            self.awaits_replug = false;
+                            self.detail = None;
+                        }
                         if self.detail.as_deref() == Some(AMBIGUOUS_DEVICE) {
                             self.detail = None;
                         }
@@ -2196,8 +2245,9 @@ impl<R: Runner> Driver<R> {
     /// Module control may have changed, or its file may have become
     /// unreadable: every automatic session the current setting no longer
     /// allows (anything but `App`) ends with reason `module_control`, its
-    /// process stopped in one parallel batch, which restores the module's
-    /// built-in mode. The saved run mode is applied to every live session the
+    /// process stopped in one parallel batch (SIGINT: a software-mode run
+    /// blanks its screens and stays in software mode, so the built-in
+    /// animation returns only after a replug or when the app quits). The saved run mode is applied to every live session the
     /// same way (`sync_run_mode`), so a mode switch reaches running modules
     /// without the user stopping anything. Called after Settings saved or
     /// failed to read the setting; a reconnecting automatic session also
@@ -3353,6 +3403,132 @@ mod tests {
         assert_eq!(state.detail.as_deref(), Some("exit code 1"));
         assert!(driver.session(&id).is_none());
         assert_eq!(driver.next_due(), None);
+    }
+
+    /// The service's last stderr line when its module ignored the software-mode command.
+    fn ignored() -> String {
+        format!(
+            "masterhub-service: the dial {} (its report 0x03 reply was empty); unplug the dial\n",
+            cooltek_sdk_cli::live_runtime::SOFTWARE_MODE_IGNORED_TEXT
+        )
+    }
+
+    #[test]
+    fn an_ignored_software_mode_command_waits_for_a_replug_instead_of_retrying() {
+        let (mut driver, id) = running(false);
+        exit(&mut driver, &id, &ignored(), 1_000);
+        let state = last(&mut driver);
+        assert_eq!(
+            (
+                state.phase,
+                state.reason,
+                state.attempt,
+                state.next_attempt_in_ms
+            ),
+            (
+                Phase::WaitingForDevice,
+                Some(Reason::ServiceExited),
+                0,
+                None
+            )
+        );
+        assert_eq!(state.detail.as_deref(), Some(SOFTWARE_MODE_IGNORED));
+        assert_eq!(driver.next_due(), None);
+        // No timer and no unchanged inventory starts it again.
+        driver.tick(60_000);
+        driver.inventory(vec![dial("/a")], 61_000);
+        assert_eq!(starts(&mut driver), 1);
+        assert_eq!(phase(&mut driver), Phase::WaitingForDevice);
+        // A replug brings the module back on another path, where it takes software mode again.
+        driver.inventory(vec![dial("/b")], 62_000);
+        assert_eq!(starts(&mut driver), 2);
+        assert_eq!(driver.runner().starts[1].path_hex, dial("/b").path_hex);
+        let state = last(&mut driver);
+        assert_eq!((state.phase, state.detail), (Phase::Running, None));
+        assert_eq!(state.session_id, id);
+    }
+
+    #[test]
+    fn a_module_that_ignored_software_mode_starts_again_once_it_was_gone() {
+        let (mut driver, id) = running(false);
+        exit(&mut driver, &id, &ignored(), 1_000);
+        driver.inventory(vec![], 2_000);
+        let state = last(&mut driver);
+        assert_eq!(
+            (state.phase, state.reason, state.detail),
+            (Phase::WaitingForDevice, Some(Reason::DeviceRemoved), None)
+        );
+        // Back on the same path after it was gone: a replug all the same.
+        driver.inventory(vec![dial("/a")], 3_000);
+        assert_eq!(starts(&mut driver), 2);
+        assert_eq!(phase(&mut driver), Phase::Running);
+    }
+
+    #[test]
+    fn an_executing_session_that_ignored_software_mode_needs_confirmation_after_the_replug() {
+        let (mut driver, id) = running(true);
+        exit(&mut driver, &id, &ignored(), 1_000);
+        assert_eq!(phase(&mut driver), Phase::WaitingForDevice);
+        driver.inventory(vec![dial("/b")], 2_000);
+        let state = last(&mut driver);
+        assert_eq!(
+            (state.phase, state.detail),
+            (Phase::NeedsConfirmation, None)
+        );
+        assert_eq!(starts(&mut driver), 1);
+    }
+
+    #[test]
+    fn an_ignored_software_mode_command_with_the_module_already_gone_is_an_ordinary_unplug() {
+        let (mut driver, id) = running(false);
+        driver.inventory(vec![], 500);
+        exit(&mut driver, &id, &ignored(), 1_000);
+        let state = last(&mut driver);
+        assert_eq!(
+            (state.phase, state.reason, state.attempt, state.detail),
+            (
+                Phase::WaitingForDevice,
+                Some(Reason::DeviceRemoved),
+                1,
+                None
+            )
+        );
+        // Back on the same path after the backoff: an ordinary restart, no replug wait.
+        driver.inventory(vec![dial("/a")], 5_000);
+        assert_eq!(starts(&mut driver), 2);
+        assert_eq!(phase(&mut driver), Phase::Running);
+    }
+
+    #[test]
+    fn a_module_gone_and_back_during_the_wait_starts_exactly_once() {
+        let (mut driver, id) = running(false);
+        exit(&mut driver, &id, &ignored(), 1_000);
+        driver.inventory(vec![], 2_000);
+        driver.inventory(vec![dial("/a")], 3_000);
+        driver.inventory(vec![dial("/a")], 4_000);
+        driver.tick(60_000);
+        assert_eq!(starts(&mut driver), 2);
+        assert_eq!(phase(&mut driver), Phase::Running);
+    }
+
+    #[test]
+    fn a_wake_gives_a_module_that_ignored_software_mode_one_new_try() {
+        let (mut driver, id) = running(false);
+        exit(&mut driver, &id, &ignored(), 1_000);
+        driver.power(PowerEvent::Suspend, 2_000);
+        driver.power(PowerEvent::Resume, 10_000);
+        driver.tick(10_000 + SETTLE_DELAY_MS);
+        assert_eq!(starts(&mut driver), 2);
+        // Ignored again: back to waiting, still without a timer.
+        let restarted = sid("/a");
+        exit(&mut driver, &restarted, &ignored(), 13_000);
+        let state = last(&mut driver);
+        assert_eq!(
+            (state.phase, state.attempt, state.next_attempt_in_ms),
+            (Phase::WaitingForDevice, 0, None)
+        );
+        driver.tick(100_000);
+        assert_eq!(starts(&mut driver), 2);
     }
 
     #[test]

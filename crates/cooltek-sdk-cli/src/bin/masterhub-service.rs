@@ -86,7 +86,8 @@ enum Command {
         /// Enable real macOS actions. Without this flag actions are only logged.
         #[arg(long)]
         execute: bool,
-        /// Request IPS dial/key software mode and restore hardware mode on exit.
+        /// Request IPS dial/key software mode and restore hardware mode on exit
+        /// (or, with --blank-on-stop, blank the screens and stay in software mode).
         #[arg(long)]
         software_mode: bool,
         #[arg(long, value_parser = clap::value_parser!(u64).range(1..=86_400))]
@@ -169,6 +170,17 @@ enum Command {
         /// ignored.
         #[arg(long)]
         exit_on_stdin_eof: bool,
+        /// When the run ends for any reason other than end of stdin (Ctrl-C or
+        /// SIGTERM, --duration-secs, --max-reports, an error), draw every M4315
+        /// key or the M131E dial screen black and leave the module in software
+        /// mode instead of restoring hardware mode. A module handed back to
+        /// hardware mode ignores every later software-mode command until it is
+        /// unplugged, so a supervisor that starts the next run on the same
+        /// module passes this. End of stdin (the supervisor quit or died) still
+        /// restores hardware mode. Requires --software-mode and
+        /// --exit-on-stdin-eof.
+        #[arg(long, requires_all = ["software_mode", "exit_on_stdin_eof"])]
+        blank_on_stop: bool,
         /// Accept control requests as JSON lines on stdin after the OBS
         /// password and Streamlabs token lines, answering each on stdout with a `control_result`
         /// record: per-LED lighting for the knobs and faders written through
@@ -240,6 +252,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
             streamlabs_endpoint,
             streamlabs_token_stdin,
             exit_on_stdin_eof,
+            blank_on_stop,
             control,
             plugin_host,
         } => {
@@ -343,6 +356,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
                 control.then(|| Arc::clone(&control_slot)),
             )?;
             options.profile_updates = profile_slot;
+            options.blank_on_stop = blank_on_stop;
             options.dial_backlight =
                 (display_sync && software_mode && dial_content != DialContent::Off)
                     .then_some(brightness.dial)
@@ -375,6 +389,10 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
                 "display_sync_requested":display_sync,
                 "profile_switch_requests":profile_switch_requests,
             });
+            // Only when set, so runs without it log exactly what they did before.
+            if blank_on_stop {
+                details["blank_on_stop"] = json!(true);
+            }
             // Only when set, so runs without plugins log exactly what they did before.
             if plugin_host {
                 details["plugin_host"] = json!(true);
@@ -1639,6 +1657,34 @@ mod tests {
         assert!(wait_for(&interrupted));
         assert!(read.load(std::sync::atomic::Ordering::SeqCst));
         assert!(closed.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    #[test]
+    fn blank_on_stop_is_off_by_default_and_needs_software_mode_and_the_stdin_watchdog() {
+        let parse = |extra: &[&str]| {
+            let mut args = vec![
+                "masterhub-service",
+                "run",
+                "--profile",
+                "p.json",
+                "--path-hex",
+                "41",
+            ];
+            args.extend_from_slice(extra);
+            Cli::try_parse_from(args).map(|cli| match cli.command {
+                Command::Run { blank_on_stop, .. } => blank_on_stop,
+                _ => unreachable!(),
+            })
+        };
+        assert!(!parse(&["--software-mode", "--exit-on-stdin-eof"]).unwrap());
+        assert!(parse(&["--software-mode", "--exit-on-stdin-eof", "--blank-on-stop"]).unwrap());
+        for refused in [
+            &["--blank-on-stop"][..],
+            &["--software-mode", "--blank-on-stop"],
+            &["--exit-on-stdin-eof", "--blank-on-stop"],
+        ] {
+            assert!(parse(refused).is_err(), "{refused:?}");
+        }
     }
 
     #[cfg(unix)]

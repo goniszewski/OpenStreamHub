@@ -4,9 +4,15 @@
 //! its JSONL stdout as `service://record` events without interpreting them, and
 //! reports the process lifecycle as `service://status`.
 //!
-//! Stopping sends one SIGINT (the service then restores hardware mode; a
-//! second Ctrl-C would make it exit immediately, so it is never repeated),
-//! waits up to `STOP_GRACE`, then SIGKILLs the child's process group. The
+//! Stopping sends one SIGINT (a second Ctrl-C would make the service exit
+//! immediately, so it is never repeated), waits up to `STOP_GRACE`, then
+//! SIGKILLs the child's process group. A software-mode run is started with
+//! `--blank-on-stop`, so a SIGINT stop blanks the keypad's keys or the dial's
+//! screen and leaves the module in software mode for the next run: a module
+//! handed back to hardware mode ignores software mode until it is replugged.
+//! App exit (`Services::stop_all`) closes each child's stdin instead, and the
+//! service then restores hardware mode, so the built-in animation comes back
+//! once the app has quit. The
 //! child runs in its own process group so a terminal Ctrl-C aimed at the app
 //! (e.g. during `tauri dev`) does not reach it a second time.
 //!
@@ -210,7 +216,11 @@ pub fn check_execute_supported(execute: bool) -> Result<(), String> {
 /// Arguments for `masterhub-service`; passed directly, never through a shell.
 /// `--exit-on-stdin-eof` is always passed: [`Services::start_with_stdin`] keeps
 /// the child's stdin pipe open for the child's whole life, so the service stops
-/// cleanly (restoring hardware mode) when this app dies, even by SIGKILL.
+/// cleanly (restoring hardware mode) when this app dies, even by SIGKILL, or
+/// quits ([`Services::stop_all`] closes the pipe). A software-mode run also
+/// gets `--blank-on-stop`: every other stop (SIGINT) blanks the module's
+/// screens and keeps it in software mode, so the next run on it can enter
+/// software mode again.
 /// `profile_switch_requests` is set for session-managed runs: the service then
 /// reports `profile` key actions as `profile_switch_requested` records, which
 /// the session driver resolves against the saved profiles.
@@ -236,6 +246,7 @@ pub fn service_args(
     }
     if software_mode {
         args.push("--software-mode".into());
+        args.push("--blank-on-stop".into());
     }
     if profile_switch_requests {
         args.push("--profile-switch-requests".into());
@@ -555,11 +566,16 @@ struct ServiceHandle {
 }
 
 /// This app's end of a running service's control channel: its stdin pipe, which stays open until the child is
-/// reaped (so the pipe closes early only when this process dies), and the requests waiting for an answer.
+/// reaped (so the pipe closes early only when this process dies, or on Quit), and the requests waiting for an answer.
 pub struct ControlPipe {
     stdin: Mutex<Option<ChildStdin>>,
     waiters: Mutex<HashMap<u64, mpsc::Sender<Value>>>,
     next: AtomicU64,
+    /// Set by the first failed or timed-out write: the pipe may now end in a partial line, so no request is written
+    /// after it. The pipe itself stays open until the child is reaped.
+    broken: AtomicBool,
+    /// Stops the child with SIGINT once the channel broke (see `Services::start_with_stdin`).
+    on_broken: OnceLock<Box<dyn Fn() + Send + Sync>>,
 }
 
 /// The largest profile handed to a running service in place, leaving room for
@@ -576,6 +592,8 @@ impl ControlPipe {
             stdin: Mutex::new(stdin),
             waiters: Mutex::new(HashMap::new()),
             next: AtomicU64::new(1),
+            broken: AtomicBool::new(false),
+            on_broken: OnceLock::new(),
         }
     }
 
@@ -632,21 +650,36 @@ impl ControlPipe {
                     }
                 }
             };
+            if self.broken.load(Ordering::SeqCst) {
+                return Err(
+                    "the control channel to this run failed; the run is stopping".to_string(),
+                );
+            }
             #[cfg(unix)]
             let result = match stdin.as_mut() {
                 Some(pipe) => write_control_line(pipe, format!("{body}\n").as_bytes(), deadline),
-                None => Err("the run on this module has ended".to_string()),
+                None => return Err("the run on this module has ended".to_string()),
             };
+            // Live runs are Unix-only; here a timed-out writer keeps the pipe and drops it when its write returns.
             #[cfg(not(unix))]
             let result =
                 write_control_threaded(&mut stdin, format!("{body}\n").into_bytes(), deadline);
-            if result.is_err() {
-                // A partial line must never be followed by another request.
-                // EOF stops the child and the session manager can restart it.
-                *stdin = None;
-            }
-            result
+            // A partial line must never be followed by another request. The pipe is not closed here: a closed
+            // stdin is the Quit stop, which hands the module back to hardware mode, and the session manager's
+            // restart would then find it ignoring software mode. The child is stopped with SIGINT instead
+            // (below), which blanks its screens and keeps software mode, and the pipe closes once it is reaped.
+            let broke = result.is_err() && !self.broken.swap(true, Ordering::SeqCst);
+            Ok((result, broke))
         })();
+        let written = match written {
+            Ok((result, broke)) => {
+                if broke && let Some(stop) = self.on_broken.get() {
+                    stop();
+                }
+                result
+            }
+            Err(error) => Err(error),
+        };
         if let Err(error) = written {
             forget();
             return Err(error);
@@ -736,15 +769,29 @@ impl ServiceHandle {
 
     /// Emits `stopping` once and sends SIGINT, unless the child already exited.
     fn request_stop(&self, service_id: &str) {
-        let mut child = lock_child(&self.child);
-        if unreaped(&mut child) && !self.stopping.swap(true, Ordering::SeqCst) {
-            (self.emit)(ServiceMessage::Status(StatusPayload::new(
-                service_id,
-                ServiceState::Stopping,
-                self.execute.load(Ordering::SeqCst),
-            )));
-            interrupt(&mut child);
+        stop_once(
+            &self.child,
+            &self.stopping,
+            &self.execute,
+            &self.emit,
+            service_id,
+        );
+    }
+
+    /// Emits `stopping` once and closes the child's stdin, the app-exit stop: the service then restores hardware
+    /// mode (footer reason `stdin_closed`) instead of blanking its screens as it does after SIGINT.
+    fn request_quit(&self, service_id: &str) {
+        {
+            let mut child = lock_child(&self.child);
+            if unreaped(&mut child) && !self.stopping.swap(true, Ordering::SeqCst) {
+                (self.emit)(ServiceMessage::Status(StatusPayload::new(
+                    service_id,
+                    ServiceState::Stopping,
+                    self.execute.load(Ordering::SeqCst),
+                )));
+            }
         }
+        self.control.close();
     }
 
     fn kill_if_running(&self) {
@@ -752,6 +799,26 @@ impl ServiceHandle {
         if unreaped(&mut child) {
             force_kill(&mut child);
         }
+    }
+}
+
+/// Emits `stopping` once and sends SIGINT, unless the child already exited or a stop was already requested (a
+/// second SIGINT would make the service exit at once, without its cleanup).
+fn stop_once(
+    child: &Mutex<Child>,
+    stopping: &AtomicBool,
+    execute: &AtomicBool,
+    emit: &Emit,
+    service_id: &str,
+) {
+    let mut child = lock_child(child);
+    if unreaped(&mut child) && !stopping.swap(true, Ordering::SeqCst) {
+        emit(ServiceMessage::Status(StatusPayload::new(
+            service_id,
+            ServiceState::Stopping,
+            execute.load(Ordering::SeqCst),
+        )));
+        interrupt(&mut child);
     }
 }
 
@@ -1034,6 +1101,20 @@ impl Services {
         let profile_path = profile.as_ref().map(|profile| profile.path().to_path_buf());
         let control = Arc::new(ControlPipe::new(stdin_pipe));
         let execute_now = Arc::new(AtomicBool::new(execute));
+        let stopping = Arc::new(AtomicBool::new(false));
+        // A broken control channel stops the run like Stop (SIGINT), never by closing stdin (the Quit stop).
+        {
+            let (child, stopping, execute, emit, id) = (
+                Arc::clone(&child),
+                Arc::clone(&stopping),
+                Arc::clone(&execute_now),
+                Arc::clone(&emit),
+                service_id.clone(),
+            );
+            let _ = control.on_broken.set(Box::new(move || {
+                stop_once(&child, &stopping, &execute, &emit, &id)
+            }));
+        }
         let run_plugins: Arc<Mutex<RunPlugins>> = Arc::default();
         let supervisor = Supervisor {
             plugins: self.plugins.get().cloned(),
@@ -1073,7 +1154,7 @@ impl Services {
                 plugins: run_plugins,
                 child,
                 execute: execute_now,
-                stopping: Arc::new(AtomicBool::new(false)),
+                stopping,
                 done,
                 profile_path,
                 emit,
@@ -1134,15 +1215,16 @@ impl Services {
         });
     }
 
-    /// App exit: SIGINT every child, wait up to `grace`, SIGKILL the rest, and
-    /// wait briefly for reaping without joining threads, so a stuck pipe never
-    /// blocks exit. Profile snapshots are removed either way. Later starts are
-    /// refused.
+    /// App exit: close every child's stdin (so a software-mode run restores
+    /// hardware mode rather than blanking, see [`service_args`]), wait up to
+    /// `grace`, SIGKILL the rest, and wait briefly for reaping without joining
+    /// threads, so a stuck pipe never blocks exit. Profile snapshots are
+    /// removed either way. Later starts are refused.
     pub fn stop_all(&self, grace: Duration) {
         let services = self.lock();
         self.closed.store(true, Ordering::SeqCst);
         for (service_id, handle) in services.iter() {
-            handle.request_stop(service_id);
+            handle.request_quit(service_id);
         }
         let all_done = || services.values().all(ServiceHandle::finished);
         if !wait_until(Instant::now() + grace, all_done) {
@@ -1802,7 +1884,10 @@ mod tests {
             .map(OsString::from)
         );
         let args = service_args(Path::new("/p.json"), "4a", false, true, false);
-        assert_eq!(args.last().unwrap(), "--software-mode");
+        assert_eq!(
+            args[args.len() - 2..],
+            ["--software-mode", "--blank-on-stop"]
+        );
         assert!(!args.iter().any(|arg| arg == "--execute"));
         assert!(!args.iter().any(|arg| arg == "--profile-switch-requests"));
         let args = service_args(Path::new("/p.json"), "4a", false, false, true);
@@ -2126,21 +2211,23 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn stop_all_interrupts_kills_and_removes_snapshots_without_blocking() {
+    fn stop_all_closes_stdin_kills_and_removes_snapshots_without_blocking() {
         use process::*;
         let services = Services::default();
         let root = tempfile::tempdir().unwrap();
         let (emit, messages) = collector();
         let polite = TempProfile::write(root.path(), &test_profiles::folders()).unwrap();
         let polite_path = polite.path().to_path_buf();
-        // The marker proves the shell installed its trap before the interrupt
-        // arrives; a fixed sleep is not enough on a loaded runner.
+        // Like the real service with `--exit-on-stdin-eof`: the end of stdin
+        // stops it cleanly (exit 0), while a SIGINT would show as exit 3. The
+        // marker proves the shell installed its trap before the stop arrives;
+        // a fixed sleep is not enough on a loaded runner.
         let ready = root.path().join("polite-ready");
         start_script(
             &services,
             "service:44",
             &format!(
-                "trap 'exit 0' INT; touch '{}'; while :; do sleep 0.02; done",
+                "trap 'exit 3' INT; touch '{}'; cat >/dev/null; exit 0",
                 ready.display()
             ),
             Some(polite),
@@ -2149,10 +2236,11 @@ mod tests {
         .unwrap();
         let stubborn = TempProfile::write(root.path(), &test_profiles::folders()).unwrap();
         let stubborn_path = stubborn.path().to_path_buf();
+        // Never reads stdin, so only the SIGKILL after the grace ends it.
         start_script(
             &services,
             "service:45",
-            "trap '' INT; exec sleep 30",
+            "trap '' INT; exec sleep 30 </dev/null",
             Some(stubborn),
             emit,
         )
@@ -2310,11 +2398,13 @@ mod tests {
         assert_eq!(stopped_feed.as_deref(), Some("live:4a"));
         wait_done(&services, &id);
         let record = &records(&messages)[0];
-        assert_eq!(record["argc"], 8);
+        assert_eq!(record["argc"], 9);
         let args = record["args"].as_str().unwrap();
         assert!(
             args.starts_with("run --profile ")
-                && args.ends_with(" --path-hex 4a --exit-on-stdin-eof --control --software-mode")
+                && args.ends_with(
+                    " --path-hex 4a --exit-on-stdin-eof --control --software-mode --blank-on-stop"
+                )
         );
         assert_eq!(statuses(&messages).last().unwrap().exit_code, Some(Some(0)));
         assert_eq!(fs::read_dir(&directory).unwrap().count(), 0);
@@ -2338,9 +2428,9 @@ mod tests {
         .unwrap();
         wait_done(&services, &id);
         let record = &records(&messages)[0];
-        assert_eq!(record["argc"], 11);
+        assert_eq!(record["argc"], 12);
         assert!(record["args"].as_str().unwrap().ends_with(
-            " --path-hex 4a --exit-on-stdin-eof --control --software-mode --display-sync --dial-content clock"
+            " --path-hex 4a --exit-on-stdin-eof --control --software-mode --blank-on-stop --display-sync --dial-content clock"
         ));
 
         // Execute off macOS and invalid profiles fail before spawning.
@@ -2785,13 +2875,18 @@ mod tests {
     }
     #[cfg(unix)]
     #[test]
-    fn control_deadline_covers_backpressure_and_closes_partial_lines() {
+    fn control_deadline_covers_backpressure_and_a_partial_line_breaks_the_channel() {
         let mut child = Command::new("sh")
             .args(["-c", "exec sleep 5"])
             .stdin(Stdio::piped())
             .spawn()
             .unwrap();
         let control = ControlPipe::new(child.stdin.take());
+        let stops = Arc::new(AtomicU64::new(0));
+        let counted = Arc::clone(&stops);
+        let _ = control.on_broken.set(Box::new(move || {
+            counted.fetch_add(1, Ordering::SeqCst);
+        }));
         let body = serde_json::json!({"type":"profile","profile":{"name":"x".repeat(47 * 1024)}});
         let start = Instant::now();
         for _ in 0..3 {
@@ -2808,11 +2903,47 @@ mod tests {
             elapsed < Duration::from_secs(1),
             "pipe write exceeded its deadline: {elapsed:?}"
         );
+        // A partial frame breaks the channel for good and stops the run once, but leaves stdin open: closing it
+        // would be the Quit stop, which hands the module back to hardware mode.
+        assert!(control.broken.load(Ordering::SeqCst));
+        assert_eq!(stops.load(Ordering::SeqCst), 1);
         assert!(
-            control.stdin.lock().unwrap().is_none(),
-            "a partial frame must close the channel"
+            control.stdin.lock().unwrap().is_some(),
+            "a failed write must not close stdin"
         );
         assert!(control.waiters.lock().unwrap().is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_broken_control_channel_stops_the_run_with_sigint_not_by_closing_stdin() {
+        use process::*;
+        let services = Services::default();
+        let (emit, messages) = collector();
+        // Never reads stdin, so control requests fill the pipe. SIGINT is the Stop path the session manager's
+        // restart needs (exit 0); a closed stdin is never noticed by this script.
+        let script = r#"trap 'printf "{\"type\":\"interrupted\"}\n"; exit 0' INT
+            printf '{"type":"service_start"}\n'
+            while :; do sleep 0.02; done"#;
+        start_script(&services, "service:46", script, None, emit).unwrap();
+        thread::sleep(Duration::from_millis(100));
+        let control = services.control("service:46").unwrap();
+        let body = serde_json::json!({"type":"profile","profile":{"name":"x".repeat(47 * 1024)}});
+        let mut failed = false;
+        for _ in 0..4 {
+            failed |= control
+                .request(body.clone(), Duration::from_millis(30))
+                .is_err();
+        }
+        assert!(failed);
+        wait_done(&services, "service:46");
+        assert!(
+            records(&messages)
+                .iter()
+                .any(|record| record["type"] == "interrupted")
+        );
+        assert!(states(&messages).contains(&ServiceState::Stopping));
+        assert_eq!(statuses(&messages).last().unwrap().exit_code, Some(Some(0)));
     }
 
     #[test]

@@ -1228,7 +1228,8 @@ fn demo_start(
     })
 }
 
-// Ends a demo: its run stops, which puts the module back in hardware mode, and the module's session starts again.
+// Ends a demo: its run stops (SIGINT, so a software-mode run blanks its screens and keeps software mode), and the
+// module's session starts again.
 #[tauri::command(async)]
 fn demo_end(state: State<'_, AppState>, path_hex: String) -> Result<(), String> {
     let service_id = service::service_id(&path_hex)?;
@@ -2373,7 +2374,8 @@ pub fn run() {
             }
             // Sleep/wake events. A suspend waits (bounded by SUSPEND_WAIT)
             // for the driver to stop every service in parallel, so each can
-            // restore hardware mode first.
+            // finish its cleanup first (a software-mode run blanks its
+            // screens and keeps software mode, `--blank-on-stop`).
             let power_events = sessions.clone();
             let sink: power::Sink = Arc::new(move |event| {
                 let (done, finished) = mpsc::channel();
@@ -2527,7 +2529,9 @@ pub fn run() {
             // Both refuse later starts, so a session still busy past the
             // wait cannot spawn an orphan after stop_all.
             state.sessions.shutdown(Duration::from_millis(500));
-            // Bounded: SIGINT, up to STOP_GRACE, then SIGKILL; never joins.
+            // Bounded: closes each child's stdin (so the modules return to
+            // hardware mode, unlike a SIGINT stop, which blanks them), up to
+            // STOP_GRACE, then SIGKILL; never joins.
             state.services.stop_all(service::STOP_GRACE);
             #[cfg(unix)]
             if let Some(host) = app.try_state::<plugin_host::PluginHost>() {

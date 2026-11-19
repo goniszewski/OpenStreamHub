@@ -351,6 +351,12 @@ describe('session manager', () => {
       'Reconnecting (attempt 2/5)', 'Reconnected', 'Paused: the background helper exited (crashed)']);
     expect(run(t).entries.at(-1)!.kind).toBe('error');
   });
+  it('says why a session waits for its module, such as a module that ignored software mode', async () => {
+    const t = await started();
+    const detail = 'The module did not take the request to let OpenStreamHub drive its screen. Unplug the module and plug it back in.';
+    session(t, 'waiting_for_device', { service_id: null, reason: 'service_exited', detail });
+    expect(texts(t).at(-1)).toBe(`Waiting for m131e to reconnect (${detail})`);
+  });
   it('a refused start ends the run once, without reconnect attempts or the service sentence', async () => {
     const t = await started();
     const raw = 'masterhub-service: nested keypad profiles run live only with --display-sync (which requires --software-mode); in OpenStreamHub, set Module control to App in Settings';

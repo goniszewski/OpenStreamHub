@@ -61,9 +61,10 @@
 //! shown once. A module that is merely not available yet (the service could
 //! not find its path or HIDAPI could not open it) keeps the retry. A module
 //! another program holds open (`IN_USE`) is a refusal too, never a retry.
-//! A keypad or dial that ignored the software-mode command (it was handed back
-//! to hardware mode earlier, by a user's Stop, Quit or a Lighting reset) is
-//! not retried on a timer either. The session re-enumerates the module's USB
+//! A keypad or dial that ignored the software-mode command (it was sent a
+//! feature read while in hardware mode, such as `masterhub-diag dial info` or
+//! another program's query; a plain hand-back by Stop, Quit or a Lighting
+//! reset does not do this) is not retried on a timer either. The session re-enumerates the module's USB
 //! device once (`Runner::reenumerate`, a software replug, macOS only) and waits
 //! up to `REENUMERATE_TIMEOUT_MS` for it to come back on a new path; the same
 //! start attempt then continues, without a confirmation or a crash count. If
@@ -537,10 +538,11 @@ pub const IN_USE: &str = "Another program is using this module. Quit it, then re
 
 /// The session detail for a keypad or dial that ignored the software-mode
 /// command. The service says the same in its own words.
-pub const SOFTWARE_MODE_IGNORED: &str = "The module did not take the request to let OpenStreamHub drive its screen: it was handed back to its built-in mode earlier and keeps it until it is reset. Unplug the module and plug it back in; the session then starts again on its own (Stop then Start does not help without the replug).";
+pub const SOFTWARE_MODE_IGNORED: &str = "The module did not take the request to let OpenStreamHub drive its screen: it is in its built-in mode and keeps it until it is reset. Unplug the module and plug it back in; the session then starts again on its own (Stop then Start does not help without the replug).";
 
 /// The session detail while the app re-enumerates a module that ignored the software-mode command. Not an error:
-/// this is the usual first start after the module was handed back to its built-in mode.
+/// the module was sent a feature read while in its built-in mode (by a diagnostic tool or another program), and the
+/// re-enumeration resets it.
 pub const REENUMERATING: &str = "The module was in its built-in mode, so OpenStreamHub reset its USB connection; it reconnects in a moment.";
 
 /// What the replug detail adds when the re-enumeration itself failed.

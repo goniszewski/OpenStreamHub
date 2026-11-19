@@ -173,10 +173,9 @@ enum Command {
         /// When the run ends for any reason other than end of stdin (Ctrl-C or
         /// SIGTERM, --duration-secs, --max-reports, an error), draw every M4315
         /// key or the M131E dial screen black and leave the module in software
-        /// mode instead of restoring hardware mode. A module handed back to
-        /// hardware mode ignores every later software-mode command until it is
-        /// unplugged, so a supervisor that starts the next run on the same
-        /// module passes this. End of stdin (the supervisor quit or died) still
+        /// mode instead of restoring hardware mode, so a supervisor that
+        /// restarts a run on the same module shows black screens between the
+        /// runs rather than the built-in animation. End of stdin (the supervisor quit or died) still
         /// restores hardware mode. Requires --software-mode and
         /// --exit-on-stdin-eof.
         #[arg(long, requires_all = ["software_mode", "exit_on_stdin_eof"])]

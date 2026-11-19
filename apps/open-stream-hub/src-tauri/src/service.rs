@@ -12,8 +12,9 @@
 //! and keeps the module in software mode for the next run. A user's stop (Stop,
 //! Module control leaving App, Quit through `Services::stop_all`) closes the
 //! child's stdin instead, and the service restores hardware mode, so the
-//! built-in animation comes back. A module handed back that way ignores
-//! software mode until it is replugged or re-enumerated (`session.rs`). The
+//! built-in animation comes back, and the next run takes software mode again.
+//! (A module that was sent a feature read while in hardware mode ignores
+//! software mode until it is replugged or re-enumerated, `session.rs`.) The
 //! child runs in its own process group so a terminal Ctrl-C aimed at the app
 //! (e.g. during `tauri dev`) does not reach it a second time.
 //!

@@ -123,7 +123,7 @@ cargo run -p cooltek-sdk-cli --locked -- dial color 123456
 
 Each prints `feature_preview`, `source: software_derived`, and the complete 32-byte `raw_hex`. Backlight accepts 0–100. Color accepts exactly three raw channel bytes in SDK order; RGB ordering is not established. Append `--path-hex DIAL_PATH_HEX_FROM_INVENTORY` to explicitly open that exact dial and send the report. These operations do not perform serial queries, automatic initialization, or firmware updates. A successful feature/output write means HIDAPI completed the operation; it is not a verified display acknowledgement.
 
-To inspect firmware and backlight, select a dial:
+To inspect firmware and backlight, select a dial that is in software mode (send `dial mode software --path-hex …` first). A dial queried in hardware mode fails the query and then ignores software mode until it is replugged or re-enumerated ([hardware results](masterhub-hardware-results.md#what-makes-a-module-ignore-software-mode-m4315-and-m131e-19-november-2026)). For the same reason `dial mode` and `keypad mode` accept `--read-back` (read report `0x03` after the SET) only with `software`.
 
 ```sh
 cargo run -p cooltek-sdk-cli --locked -- dial info --path-hex DIAL_PATH_HEX_FROM_INVENTORY

@@ -90,9 +90,11 @@ pub fn set_software_mode<T: ReportTransport + ?Sized>(
 /// back with [`crate::command_with_reply`] and returns the reply.
 ///
 /// A dial that takes the command answers with a full 32-byte report. One that
-/// ignores it answers with zero bytes: a dial handed back to hardware mode
-/// ignores every later software-mode command until it is unplugged or loses
-/// power (docs/masterhub-hardware-results.md, 19 November 2026).
+/// ignores it answers with zero bytes: a dial that was sent a feature read
+/// (such as [`read_backlight`] or a report `0x03` read) while in hardware mode
+/// ignores every later software-mode command until it is unplugged, loses
+/// power or is re-enumerated. A hand-back with [`set_software_mode`]`(false)`
+/// alone does not (docs/masterhub-hardware-results.md, 19 November 2026).
 ///
 /// # Errors
 /// Same as [`set_software_mode`], or a failed read-back as described in

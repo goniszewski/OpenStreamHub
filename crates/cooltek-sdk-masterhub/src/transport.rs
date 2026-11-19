@@ -163,8 +163,8 @@ pub const COMMAND_REPLY_REPORT_ID: u8 = 0x03;
 /// bytes the module answered with.
 ///
 /// A display module that takes the command answers with a full report; one that
-/// ignores it (for example a keypad left in hardware mode that no longer takes a
-/// software-mode SET) answers with zero bytes, so an empty reply means "ignored",
+/// ignores it (for example a keypad that was sent a feature read while in
+/// hardware mode, and so no longer takes a software-mode SET) answers with zero bytes, so an empty reply means "ignored",
 /// not a failure. On Windows the HID stack reports that zero-length answer as a
 /// failed GET rather than 0 bytes, so there a failed GET after a successful SET is
 /// returned as an empty reply. Elsewhere a failed GET is an error.

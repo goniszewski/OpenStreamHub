@@ -22,9 +22,12 @@ pub fn set<T: ReportTransport + ?Sized>(
 }
 
 /// Sends the software-mode command and reads report `0x03` back, returning the
-/// reply. An empty reply means the module ignored the command: one handed back
-/// to hardware mode ignores every later software-mode command until it is
-/// unplugged or loses power.
+/// reply. An empty reply means the module ignored the command: one that has been sent a feature read
+/// (any GET, such as this read-back after the hardware-mode command) while in
+/// hardware mode ignores every later software-mode command until it is
+/// unplugged, loses power or is re-enumerated. A hand-back with the
+/// hardware-mode command alone does not (docs/masterhub-hardware-results.md,
+/// 19 November 2026).
 pub fn enter<T: ReportTransport + ?Sized>(
     transport: &T,
     module: Option<ModuleKind>,

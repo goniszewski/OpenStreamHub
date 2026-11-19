@@ -104,9 +104,10 @@ pub struct LiveOptions {
     pub dial_backlight: Option<u8>,
     /// Blank the module's screens (every M4315 key, or the M131E dial screen, drawn black) and leave it in software
     /// mode when the run ends, instead of restoring hardware mode, unless the stop came from a closed stdin
-    /// (`stdin_closed`), which still restores hardware mode. A module handed back to hardware mode ignores every later
-    /// software-mode command until it is unplugged, so a supervisor that starts the next run on the same module keeps
-    /// it in software mode between runs. Requires `software_mode` and `stdin_closed`.
+    /// (`stdin_closed`), which still restores hardware mode. A supervisor that restarts a run on the same module passes
+    /// it so the screens go black rather than showing the built-in animation for a moment between the runs. (A module
+    /// handed back with the hardware-mode command alone takes the next software-mode command; only a feature read
+    /// while it is in hardware mode makes it ignore them until a reset.) Requires `software_mode` and `stdin_closed`.
     pub blank_on_stop: bool,
 }
 
@@ -2198,8 +2199,8 @@ fn software_mode_ignored(module: ServiceModule) -> String {
         "dial"
     };
     format!(
-        "the {name} {SOFTWARE_MODE_IGNORED_TEXT} (its report 0x03 reply was empty); it was handed back to its built-in \
-         mode earlier and keeps it until it is unplugged: unplug the {name}, plug it back in, then start again"
+        "the {name} {SOFTWARE_MODE_IGNORED_TEXT} (its report 0x03 reply was empty); it is in its built-in mode and keeps \
+         it until it is reset: unplug the {name}, plug it back in, then start again"
     )
 }
 

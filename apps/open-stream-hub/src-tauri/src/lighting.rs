@@ -7,8 +7,8 @@
 //! mode, so an apply puts the dial in software mode first — the built-in
 //! animation stops and the screen stays dark until a run draws on it — and
 //! the reset command leaves software mode, which returns the animation. The
-//! software-mode command is read back: a dial that was handed back to its
-//! built-in mode ignores it until it is reset, so an apply then resets its USB
+//! software-mode command is read back: a dial that was sent a feature read
+//! while in its built-in mode ignores it until it is reset, so an apply then resets its USB
 //! connection (`cooltek_sdk_masterhub::reenumerate`) and asks the user to apply
 //! again a moment later.
 
@@ -53,13 +53,10 @@ pub fn write_dial_lighting<T: ReportTransport + ?Sized>(
 
 /// Hands one dial back to its built-in mode, which returns its own animation.
 ///
-/// On purpose: that is what a reset is for. A dial handed back this way ignores
-/// every later software-mode command until it is reset (a replug, a power
-/// loss, or a USB re-enumeration). The next run on it ends at once with the
-/// service's "ignored the software-mode command" error, and its session then
-/// re-enumerates the dial and starts again (macOS); only where that fails does
-/// it wait for a replug (`session::SOFTWARE_MODE_IGNORED`). The next apply
-/// re-enumerates it too and asks to apply again ([`apply_dial_lighting`]).
+/// On purpose: that is what a reset is for. Only the hardware-mode command is
+/// sent and nothing is read back, so the next run or apply on the dial takes
+/// software mode again (a feature read in hardware mode would make it ignore
+/// software mode until a reset; docs/masterhub-hardware-results.md).
 pub fn restore_dial_mode<T: ReportTransport + ?Sized>(transport: &T) -> Result<(), String> {
     dial::set_software_mode(transport, false)
         .map_err(|error| format!("could not return the dial to its built-in mode: {error}"))
@@ -168,7 +165,7 @@ fn built_in_mode_error(label: &str, reenumerated: Result<(), String>) -> String 
 
 /// Returns every target dial to its built-in mode, in order, stopping at the
 /// first failure. Returns the number of dials reset. A later run or apply on a
-/// reset dial re-enumerates it first (see [`restore_dial_mode`]).
+/// reset dial takes software mode again (see [`restore_dial_mode`]).
 pub fn reset_dial_lighting(registry: &DeviceRegistry, targets: &[String]) -> Result<usize, String> {
     let dials = open_dials(registry, targets)?;
     for (device, label, _) in &dials {

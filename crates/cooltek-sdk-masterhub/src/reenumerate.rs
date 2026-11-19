@@ -1,7 +1,7 @@
 //! A software replug: re-enumerating the USB device of one module.
 //!
-//! An M4315 keypad or M131E dial handed back to hardware mode ignores every later software-mode command until it
-//! is unplugged or loses power. On macOS, re-enumerating its USB device resets it the same way: measured on 19
+//! An M4315 keypad or M131E dial that was sent a feature read while in hardware mode ignores every later
+//! software-mode command until it is unplugged or loses power. On macOS, re-enumerating its USB device resets it the same way: measured on 19
 //! November 2026 (docs/masterhub-hardware-results.md), the module dropped out, came back on a new HID path about
 //! 0.2 s later, and took software mode on the first try. Only that module drops out. No root or entitlement is
 //! needed. Other platforms report [`reenumerate`] as unavailable.

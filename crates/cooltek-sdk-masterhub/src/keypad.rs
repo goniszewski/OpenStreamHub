@@ -181,9 +181,11 @@ pub fn set_software_mode<T: ReportTransport + ?Sized>(
 /// back with [`crate::command_with_reply`] and returns the reply.
 ///
 /// A keypad that takes the command answers with a full 32-byte report. One
-/// that ignores it answers with zero bytes: a keypad handed back to hardware
-/// mode ignores every later software-mode command until it is unplugged or
-/// loses power (docs/masterhub-hardware-results.md, 19 November 2026).
+/// that ignores it answers with zero bytes: a keypad that was sent a feature
+/// read (such as a report `0x03` read) while in hardware mode ignores every
+/// later software-mode command until it is unplugged, loses power or is
+/// re-enumerated. A hand-back with [`set_software_mode`]`(false)` alone does
+/// not (docs/masterhub-hardware-results.md, 19 November 2026).
 ///
 /// # Errors
 /// A failed SET, or a failed read-back as described in

@@ -17,6 +17,7 @@ pub mod lighting;
 mod macros;
 mod module;
 pub mod modules;
+pub mod reenumerate;
 pub mod set_idle;
 #[doc(hidden)]
 mod private {

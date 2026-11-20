@@ -33,6 +33,13 @@ pub const PROFILE_SWITCH_UNAVAILABLE: &str =
 pub const TIMER_LIMIT_REACHED: &str =
     "at most 8 timers can run at once; this timer was not started";
 
+/// `service_end` reason for a run whose IPS module ignored the software-mode
+/// command (its report `0x03` reply was empty). The run ends at once, with an
+/// error telling the user to replug the module, and sends no hardware-mode
+/// command. Kept even though an error is present, so a supervisor can tell it
+/// from other errors.
+pub const SOFTWARE_MODE_IGNORED: &str = "software_mode_ignored";
+
 /// Why running timers were cancelled without a press.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TimerCancelReason {
@@ -235,16 +242,22 @@ pub fn execution(execute: bool) -> &'static str {
 
 /// The `service_end` record shared by replay and live sessions.
 ///
-/// A present `error` always reports the reason as `error`.
+/// A present `error` reports the reason as `error`, except for
+/// [`SOFTWARE_MODE_IGNORED`], which always carries its error.
 pub fn end_record(
     reason: &str,
     error: Option<&str>,
     summary: &LiveSummary,
     execute: bool,
 ) -> Value {
+    let reason = if error.is_some() && reason != SOFTWARE_MODE_IGNORED {
+        "error"
+    } else {
+        reason
+    };
     let mut record = json!({
         "type":"service_end", "schema_version":1,
-        "reason":if error.is_some() {"error"} else {reason}, "error":error,
+        "reason":reason, "error":error,
         "report_count":summary.report_count, "queued_report_count":summary.queued_report_count,
         "processed_report_count":summary.processed_report_count,
         "coalesced_report_count":summary.coalesced_report_count,

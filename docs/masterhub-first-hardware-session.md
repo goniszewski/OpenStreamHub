@@ -67,6 +67,8 @@ Dial only:
 masterhub-diag dial info --path-hex DIAL_PATH_HEX        # QUERY
 ```
 
+Run it only while the dial is in software mode (put it there first with `dial mode software --path-hex DIAL_PATH_HEX`). Queried in hardware mode, with its built-in animation running, the dial fails the query and then ignores software mode until it is replugged or re-enumerated ([hardware results](masterhub-hardware-results.md#what-makes-a-module-ignore-software-mode-m4315-and-m131e-19-november-2026)).
+
 Saves four raw firmware bytes, eleven text bytes and the backlight value. Run on each dial interface if more than one exists, and note which succeeds. Expected: success on one interface; reply byte 1 stays opaque. Confirms or refutes "M131E feature queries" (selectors `47`, `48`, `49`, ID `4c`). Record the firmware bytes verbatim for every module version.
 
 ### Step 2. Descriptors (READ)
@@ -220,7 +222,7 @@ Writes `03 49 01` (dial) or `03 3a 01` (keys), then attempts `03 49 00` or `03 3
 
 If a module does not return to hardware mode, run `masterhub-diag dial mode hardware --path-hex DIAL_PATH_HEX` (WRITE), then replug; log it.
 
-To check whether the dial or keypad took a mode command, add `--read-back`: after the SET it reads report `0x03` and prints `reply_length` and `reply_hex`. A 32-byte reply means the module took the command; 0 bytes means it ignored it (for example software mode asked for again after hardware mode was restored, without a replug). On Windows the HID stack reports that empty reply as a failed GET, and the SDK (`command_with_reply`) reads it as 0 bytes there; on other systems a failed GET is still an error.
+To check whether the dial or keypad took a mode command, add `--read-back`: after the SET it reads report `0x03` and prints `reply_length` and `reply_hex`. A 32-byte reply means the module took the command; 0 bytes means it ignored it. Use it with `software` only: a read that reaches a module in hardware mode makes it ignore every later software-mode command until a replug or re-enumeration ([hardware results](masterhub-hardware-results.md#what-makes-a-module-ignore-software-mode-m4315-and-m131e-19-november-2026)), so `masterhub-diag` refuses `--read-back` with `hardware` (a hardware-mode reply is empty either way). On Windows the HID stack reports that empty reply as a failed GET, and the SDK (`command_with_reply`) reads it as 0 bytes there; on other systems a failed GET is still an error.
 
 ```sh
 masterhub-diag dial mode software --path-hex DIAL_PATH_HEX --read-back   # WRITE, then QUERY 0x03

@@ -6,7 +6,11 @@
 //! (docs/masterhub-hardware-results.md): lighting takes effect in software
 //! mode, so an apply puts the dial in software mode first — the built-in
 //! animation stops and the screen stays dark until a run draws on it — and
-//! the reset command leaves software mode, which returns the animation.
+//! the reset command leaves software mode, which returns the animation. The
+//! software-mode command is read back: a dial that was sent a feature read
+//! while in its built-in mode ignores it until it is reset, so an apply then resets its USB
+//! connection (`cooltek_sdk_masterhub::reenumerate`) and asks the user to apply
+//! again a moment later.
 
 use cooltek_sdk_cli::{
     capture::encode_hex,
@@ -16,9 +20,16 @@ use cooltek_sdk_masterhub::lighting::LedModule;
 pub use cooltek_sdk_masterhub::lighting::{LedLook, read_led_state, write_led_lighting};
 use cooltek_sdk_masterhub::{DeviceRegistry, ModuleIdentity, ModuleKind, ReportTransport, dial};
 
+/// The error of [`write_dial_lighting`] for a dial that ignored the
+/// software-mode command (an empty report `0x03` reply): it is in its built-in
+/// mode and takes no lighting until it is reset. Nothing else was written.
+pub const DIAL_IN_BUILT_IN_MODE: &str =
+    "the dial is in its built-in mode and did not take the lighting";
+
 /// Writes one dial's lighting in the order hardware verified: software mode,
 /// then the backlight, then the solid colour. The backlight is validated
-/// before any write, so an out-of-range value writes nothing.
+/// before any write, so an out-of-range value writes nothing. The software-mode
+/// command is read back, and an empty reply stops with [`DIAL_IN_BUILT_IN_MODE`].
 ///
 /// A failure stops at the first failing write; earlier reports may have
 /// reached the device. The next apply rewrites all three.
@@ -29,8 +40,11 @@ pub fn write_dial_lighting<T: ReportTransport + ?Sized>(
 ) -> Result<(), String> {
     dial::backlight_report(backlight)
         .map_err(|error| format!("the backlight must be between 0 and 100: {error}"))?;
-    dial::set_software_mode(transport, true)
+    let reply = dial::enter_software_mode_with_reply(transport)
         .map_err(|error| format!("could not put the dial in software mode: {error}"))?;
+    if reply.is_empty() {
+        return Err(DIAL_IN_BUILT_IN_MODE.into());
+    }
     dial::set_backlight(transport, backlight)
         .map_err(|error| format!("could not set the dial backlight: {error}"))?;
     dial::set_color(transport, colour)
@@ -38,6 +52,11 @@ pub fn write_dial_lighting<T: ReportTransport + ?Sized>(
 }
 
 /// Hands one dial back to its built-in mode, which returns its own animation.
+///
+/// On purpose: that is what a reset is for. Only the hardware-mode command is
+/// sent and nothing is read back, so the next run or apply on the dial takes
+/// software mode again (a feature read in hardware mode would make it ignore
+/// software mode until a reset; docs/masterhub-hardware-results.md).
 pub fn restore_dial_mode<T: ReportTransport + ?Sized>(transport: &T) -> Result<(), String> {
     dial::set_software_mode(transport, false)
         .map_err(|error| format!("could not return the dial to its built-in mode: {error}"))
@@ -80,7 +99,7 @@ fn dial_label(selected: &ModuleIdentity) -> String {
 fn open_dials(
     registry: &DeviceRegistry,
     targets: &[String],
-) -> Result<Vec<(hidapi::HidDevice, String)>, String> {
+) -> Result<Vec<(hidapi::HidDevice, String, std::ffi::CString)>, String> {
     let inventory = registry.devices();
     let mut opened = Vec::new();
     for target in targets {
@@ -90,13 +109,18 @@ fn open_dials(
         let device = registry
             .open(selected)
             .map_err(|error| format!("{label}: could not open it: {error}"))?;
-        opened.push((device, label));
+        opened.push((device, label, selected.path.clone()));
     }
     Ok(opened)
 }
 
 /// Applies the backlight and colour to every target dial, in order, stopping
 /// at the first failure. Returns the number of dials written.
+///
+/// A dial in its built-in mode ([`DIAL_IN_BUILT_IN_MODE`]) has its USB device
+/// re-enumerated once the handles are closed, so it comes back a moment later
+/// ready for software mode, and the error asks to apply again; where that is
+/// unavailable or fails, it asks for a replug instead.
 pub fn apply_dial_lighting(
     registry: &DeviceRegistry,
     targets: &[String],
@@ -104,18 +128,47 @@ pub fn apply_dial_lighting(
     colour: [u8; 3],
 ) -> Result<usize, String> {
     let dials = open_dials(registry, targets)?;
-    for (device, label) in &dials {
-        write_dial_lighting(device, backlight, colour)
-            .map_err(|error| format!("{label}: {error}"))?;
+    let mut ignored = None;
+    for (device, label, path) in &dials {
+        match write_dial_lighting(device, backlight, colour) {
+            Ok(()) => {}
+            Err(error) if error == DIAL_IN_BUILT_IN_MODE => {
+                ignored = Some((label.clone(), path.clone()));
+                break;
+            }
+            Err(error) => return Err(format!("{label}: {error}")),
+        }
     }
-    Ok(dials.len())
+    let count = dials.len();
+    // Closed first, so the re-enumeration finds no handle of ours open.
+    drop(dials);
+    match ignored {
+        None => Ok(count),
+        Some((label, path)) => Err(built_in_mode_error(
+            &label,
+            cooltek_sdk_masterhub::reenumerate::reenumerate(&path),
+        )),
+    }
+}
+
+/// The apply error for a dial in its built-in mode, after its re-enumeration was asked for.
+fn built_in_mode_error(label: &str, reenumerated: Result<(), String>) -> String {
+    match reenumerated {
+        Ok(()) => format!(
+            "{label}: {DIAL_IN_BUILT_IN_MODE}; OpenStreamHub reset its USB connection, so apply again in a moment"
+        ),
+        Err(error) => format!(
+            "{label}: {DIAL_IN_BUILT_IN_MODE}; unplug it, plug it back in, then apply again (resetting its USB connection did not work: {error})"
+        ),
+    }
 }
 
 /// Returns every target dial to its built-in mode, in order, stopping at the
-/// first failure. Returns the number of dials reset.
+/// first failure. Returns the number of dials reset. A later run or apply on a
+/// reset dial takes software mode again (see [`restore_dial_mode`]).
 pub fn reset_dial_lighting(registry: &DeviceRegistry, targets: &[String]) -> Result<usize, String> {
     let dials = open_dials(registry, targets)?;
-    for (device, label) in &dials {
+    for (device, label, _) in &dials {
         restore_dial_mode(device).map_err(|error| format!("{label}: {error}"))?;
     }
     Ok(dials.len())
@@ -256,6 +309,8 @@ mod tests {
         /// Zero-based index of the feature write that fails, or a value past
         /// the end when every write succeeds.
         fail_at: AtomicUsize,
+        /// Answer the software-mode read-back with 0 bytes, like a dial in its built-in mode.
+        ignore_software_mode: bool,
     }
 
     impl Fake {
@@ -281,8 +336,21 @@ mod tests {
             panic!("lighting writes never poll input")
         }
 
-        fn get_feature_report(&self, _: &mut [u8]) -> HidResult<usize> {
-            panic!("lighting writes never query feature reports")
+        fn get_feature_report(&self, buffer: &mut [u8]) -> HidResult<usize> {
+            // Only the read-back of the software-mode command.
+            assert_eq!(
+                buffer[0], 0x03,
+                "lighting writes query no other feature report"
+            );
+            assert_eq!(
+                &self.feature_writes.borrow().last().unwrap()[..3],
+                &[0x03, 0x49, 1]
+            );
+            Ok(if self.ignore_software_mode {
+                0
+            } else {
+                buffer.len()
+            })
         }
 
         fn send_feature_report(&self, report: &[u8]) -> HidResult<()> {
@@ -361,6 +429,25 @@ mod tests {
                 assert!(report[prefix.len()..].iter().all(|&byte| byte == 0));
             }
         }
+    }
+
+    #[test]
+    fn a_dial_in_its_built_in_mode_takes_no_lighting_and_the_error_asks_to_apply_again() {
+        let fake = Fake {
+            ignore_software_mode: true,
+            ..Fake::succeeding()
+        };
+        let error = write_dial_lighting(&fake, 50, [1, 2, 3]).unwrap_err();
+        assert_eq!(error, DIAL_IN_BUILT_IN_MODE);
+        // Only the software-mode command: no backlight or colour for a dial that did not take it.
+        assert_eq!(written(&fake).len(), 1);
+        let again = built_in_mode_error("the dial", Ok(()));
+        assert!(again.contains("apply again in a moment"), "{again}");
+        let replug = built_in_mode_error("the dial", Err("could not open".into()));
+        assert!(
+            replug.contains("unplug it") && replug.contains("could not open"),
+            "{replug}"
+        );
     }
 
     #[test]

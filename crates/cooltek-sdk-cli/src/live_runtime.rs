@@ -64,7 +64,7 @@ const TIMER_POLL: Duration = Duration::from_millis(250);
 /// Error reported when the input loop panics; cleanup still runs.
 const INPUT_PANIC: &str = "input loop panicked";
 /// Error reported when the coordinator panics after the input loop; the
-/// hardware-mode restore still runs.
+/// cleanup (hardware-mode restore, or blanking) still runs.
 const COORDINATOR_PANIC: &str = "live session coordinator panicked";
 
 /// Bounds for a single live interface.
@@ -102,6 +102,13 @@ pub struct LiveOptions {
     /// The dial's backlight (percent), set right after software mode is entered. Only for an M131E run in software
     /// mode; `None` leaves the backlight as the module has it.
     pub dial_backlight: Option<u8>,
+    /// Blank the module's screens (every M4315 key, or the M131E dial screen, drawn black) and leave it in software
+    /// mode when the run ends, instead of restoring hardware mode, unless the stop came from a closed stdin
+    /// (`stdin_closed`), which still restores hardware mode. A supervisor that restarts a run on the same module passes
+    /// it so the screens go black rather than showing the built-in animation for a moment between the runs. (A module
+    /// handed back with the hardware-mode command alone takes the next software-mode command; only a feature read
+    /// while it is in hardware mode makes it ignore them until a reset.) Requires `software_mode` and `stdin_closed`.
+    pub blank_on_stop: bool,
 }
 
 impl Default for LiveOptions {
@@ -120,6 +127,7 @@ impl Default for LiveOptions {
             stdin_closed: None,
             profile_updates: None,
             dial_backlight: None,
+            blank_on_stop: false,
         }
     }
 }
@@ -1626,12 +1634,18 @@ where
     let started = Instant::now();
     let mut input = InputSession::new(device.module);
     let mut mode_attempted = false;
+    // The module answered the software-mode command with an empty reply: it ignored it.
+    let mut mode_ignored = false;
+    // The module answered the software-mode command with a full reply: it is in software mode, so blanking (rather
+    // than restoring) leaves it in a known state.
+    let mut mode_entered = false;
     let mut counts = Finish::default();
     let mut pending: Option<Work> = None;
     // The key currently held down, for press feedback.
     let mut held: Option<u8> = None;
     // A panic in the input loop (decoding, routing, a transport) is contained
-    // so the cleanup below, including the hardware-mode restore, still runs.
+    // so the cleanup below, including the hardware-mode restore (or the
+    // blanking with `blank_on_stop`), still runs.
     let input_loop = std::panic::AssertUnwindSafe(|| -> Result<&str, String> {
         match ready_rx.recv_timeout(options.startup_timeout) {
             Ok(Ok(())) => {}
@@ -1643,7 +1657,12 @@ where
         }
         if options.software_mode {
             mode_attempted = true;
-            crate::mode::set(reader.transport(), mode_module(device.module), true)?;
+            let reply = crate::mode::enter(reader.transport(), mode_module(device.module))?;
+            if reply.is_empty() {
+                mode_ignored = true;
+                return Err(software_mode_ignored(device.module));
+            }
+            mode_entered = true;
             if let Some(percent) = options.dial_backlight {
                 // A failed backlight write is not a failed run: the dial just keeps its own brightness.
                 let _ = cooltek_sdk_masterhub::dial::set_backlight(reader.transport(), percent);
@@ -1745,11 +1764,16 @@ where
     let result = std::panic::catch_unwind(input_loop)
         .unwrap_or_else(|payload| Err(format!("{INPUT_PANIC}: {}", panic_message(&*payload))));
     // A panic after the input loop (display coordination, drain, worker
-    // completion) is contained too, so the hardware-mode restore below runs on
-    // every exit path once software mode was attempted. The loop's outcome is
+    // completion) is contained too, so the cleanup below runs on every exit
+    // path once software mode was attempted: the hardware-mode restore, or
+    // with `blank_on_stop` the blanking once software mode was entered, and
+    // nothing when the module ignored the software-mode command. The loop's outcome is
     // recorded first so a later panic cannot discard it.
     let normal = matches!(result, Ok("duration_elapsed" | "max_reports"));
     counts.reason = result.as_ref().copied().unwrap_or("error").to_owned();
+    if mode_ignored {
+        counts.reason = crate::service_events::SOFTWARE_MODE_IGNORED.into();
+    }
     counts.error = result.err();
     let coordination = std::panic::AssertUnwindSafe(|| {
         // No display sync starts during drain or cancellation.
@@ -1835,20 +1859,29 @@ where
             );
             (None, LiveSummary::default(), None)
         });
-    let cleanup = if mode_attempted {
-        restore_hardware_mode(reader.transport(), device.module)
-    } else {
+    // A module that ignored the software-mode command is still in hardware mode: nothing to restore. Blanking needs
+    // a module known to be in software mode; after a failed software-mode command (or read-back) its mode is
+    // unknown, so the hardware-mode command is attempted as it always was after an enable failure.
+    let stdin_closed = options
+        .stdin_closed
+        .is_some_and(|closed| closed.load(Ordering::SeqCst));
+    let cleanup = if !mode_attempted || mode_ignored {
         Ok(())
+    } else if options.blank_on_stop && mode_entered && !stdin_closed {
+        blank_screens(
+            reader.transport(),
+            device.module,
+            display_thread.as_ref(),
+            display_stopped,
+        )
+    } else {
+        restore_hardware_mode(reader.transport(), device.module)
     };
     counts.error = combine_errors(counts.error.take(), cleanup.err());
     if normal && abort.load(Ordering::SeqCst) && counts.error.is_none() {
         counts.reason = "interrupted".into();
     }
-    if counts.reason == "interrupted"
-        && options
-            .stdin_closed
-            .is_some_and(|closed| closed.load(Ordering::SeqCst))
-    {
+    if counts.reason == "interrupted" && stdin_closed {
         counts.reason = "stdin_closed".into();
     }
     summary.report_count = counts.reports;
@@ -2152,8 +2185,27 @@ fn validate_options(options: LiveOptions, device: &DeviceContext) -> Result<(), 
     if options.software_mode && !crate::mode::supported(mode_module(device.module)) {
         return Err("software mode requires an M131E or M4315 session".into());
     }
+    if options.blank_on_stop && (!options.software_mode || options.stdin_closed.is_none()) {
+        return Err("blanking on stop requires software mode and the stdin watchdog".into());
+    }
     Ok(())
 }
+
+/// The error of a run whose module ignored the software-mode command.
+fn software_mode_ignored(module: ServiceModule) -> String {
+    let name = if module == ServiceModule::M4315 {
+        "keypad"
+    } else {
+        "dial"
+    };
+    format!(
+        "the {name} {SOFTWARE_MODE_IGNORED_TEXT} (its report 0x03 reply was empty); it is in its built-in mode and keeps \
+         it until it is reset: unplug the {name}, plug it back in, then start again"
+    )
+}
+
+/// The part of [`software_mode_ignored`]'s error a supervisor matches, the same for every module.
+pub const SOFTWARE_MODE_IGNORED_TEXT: &str = "ignored the software-mode command";
 
 /// Returns a panic payload's message, if it is a string.
 fn panic_message(payload: &(dyn std::any::Any + Send)) -> &str {
@@ -2199,6 +2251,44 @@ fn restore_hardware_mode<T: ReportTransport + ?Sized>(
     crate::mode::set(transport, mode_module(module), false).map_err(|retry| {
         format!("restoring module hardware mode failed: first attempt: {first}; retry: {retry}")
     })
+}
+
+/// Draws every M4315 key, or the M131E dial screen, black, and leaves the module in software mode.
+///
+/// After a display run the display thread must have stopped: its write gate is then opened again for these images
+/// only. A display thread still stuck in a write leaves the screens as they are, and that is an error, like a failed
+/// write (an unplugged module).
+fn blank_screens<T: ReportTransport>(
+    transport: &T,
+    module: ServiceModule,
+    display: Option<&DisplayThread>,
+    display_stopped: Option<bool>,
+) -> Result<(), String> {
+    let failed = |error: String| format!("blanking the module's screens failed: {error}");
+    if let Some(display) = display {
+        if display_stopped != Some(true) {
+            return Err(failed("the display thread did not stop".into()));
+        }
+        display.write_gate.store(false, Ordering::SeqCst);
+    }
+    let mut sink =
+        crate::display_sink::HidDisplaySink::new(transport, mode_module(module)).map_err(failed)?;
+    if module == ServiceModule::M4315 {
+        let side = u32::from(cooltek_sdk_masterhub::keypad::IMAGE_WIDTH);
+        let black =
+            crate::display_artwork::encode(&image::RgbImage::new(side, side)).map_err(failed)?;
+        for key in 0..cooltek_sdk_service::display_sync::KEY_COUNT as u8 {
+            sink.write_key_image(key, &black, &mut |_| {})
+                .map_err(|error| failed(format!("key {key}: {error}")))?;
+        }
+    } else {
+        let side = u32::from(cooltek_sdk_masterhub::dial::IMAGE_WIDTH);
+        let black =
+            crate::dial_artwork::encode(&image::RgbImage::new(side, side)).map_err(failed)?;
+        sink.write_dial_image(&black, &mut |_| {})
+            .map_err(|error| failed(error.to_string()))?;
+    }
+    Ok(())
 }
 
 fn validate_display(
@@ -3014,6 +3104,12 @@ mod tests {
         signal_second: Option<SyncSender<()>>,
         fail_enable: bool,
         fail_cleanup: bool,
+        /// Answer the software-mode command's read-back with 0 bytes, like a module that ignored it.
+        ignore_enable: bool,
+        /// Output reports (image chunks) written.
+        outputs: Arc<Mutex<Vec<Vec<u8>>>>,
+        /// Declare display output report 2 (65 bytes) in the HID descriptor, so images can be written.
+        descriptor: bool,
         /// Shared event log: mode reports are logged as `on` and `off`.
         log: Option<Arc<Mutex<Vec<&'static str>>>>,
     }
@@ -3029,6 +3125,9 @@ mod tests {
                 signal_second: None,
                 fail_enable: false,
                 fail_cleanup: false,
+                ignore_enable: false,
+                outputs: Arc::new(Mutex::new(Vec::new())),
+                descriptor: false,
                 log: None,
             }
         }
@@ -3069,8 +3168,8 @@ mod tests {
                 }
             }
         }
-        fn get_feature_report(&self, _: &mut [u8]) -> HidResult<usize> {
-            panic!("runtime must not query features")
+        fn get_feature_report(&self, buffer: &mut [u8]) -> HidResult<usize> {
+            answer_mode_read_back(&self.writes, buffer, self.ignore_enable)
         }
         fn send_feature_report(&self, bytes: &[u8]) -> HidResult<()> {
             self.writes.lock().unwrap().push(bytes.to_vec());
@@ -3087,6 +3186,35 @@ mod tests {
                 Ok(())
             }
         }
+        fn write_output(&self, data: &[u8]) -> HidResult<usize> {
+            self.outputs.lock().unwrap().push(data.to_vec());
+            Ok(data.len())
+        }
+        fn get_report_descriptor(&self, buffer: &mut [u8]) -> HidResult<usize> {
+            if !self.descriptor {
+                return Err(hid_error("no descriptor"));
+            }
+            // Report ID 2 with 64 eight-bit output fields.
+            let descriptor = [0x85, 0x02, 0x75, 0x08, 0x95, 64, 0x91, 0x02];
+            buffer[..descriptor.len()].copy_from_slice(&descriptor);
+            Ok(descriptor.len())
+        }
+    }
+    /// Answers the read-back of report 0x03 that follows the software-mode command: 32 bytes when the module took it,
+    /// none when `ignored`. The runtime queries no other feature.
+    fn answer_mode_read_back(
+        writes: &Mutex<Vec<Vec<u8>>>,
+        buffer: &mut [u8],
+        ignored: bool,
+    ) -> HidResult<usize> {
+        assert_eq!(buffer[0], 0x03, "runtime must not query other features");
+        let last = writes.lock().unwrap().last().map(|report| report[2]);
+        assert_eq!(last, Some(1), "only the software-mode command is read back");
+        if ignored {
+            return Ok(0);
+        }
+        buffer[1..].fill(0);
+        Ok(buffer.len())
     }
     fn dial(selector: u8, value: u8, time: u64) -> Step {
         Step::Raw(vec![1, 0x44, 3, 0, selector, 0, value], time)
@@ -4775,8 +4903,8 @@ mod tests {
                 self.flag.store(true, Ordering::SeqCst);
                 Err(hid_error("read interrupted"))
             }
-            fn get_feature_report(&self, _: &mut [u8]) -> HidResult<usize> {
-                panic!("runtime must not query features")
+            fn get_feature_report(&self, buffer: &mut [u8]) -> HidResult<usize> {
+                answer_mode_read_back(&self.writes, buffer, false)
             }
             fn send_feature_report(&self, bytes: &[u8]) -> HidResult<()> {
                 self.writes.lock().unwrap().push(bytes.to_vec());
@@ -4862,6 +4990,244 @@ mod tests {
         assert_eq!(footer["reason"], "stdin_closed");
         assert!(footer["error"].is_null());
         assert_eq!(*writes.lock().unwrap(), modes());
+    }
+
+    struct StoppedRun {
+        result: Result<LiveSummary, String>,
+        footer: Value,
+        writes: Vec<Vec<u8>>,
+        outputs: Vec<Vec<u8>>,
+    }
+
+    /// A software-mode run on `module` that a closure on the input thread ends: `stop` sets the interrupt flag, and
+    /// with `close_stdin` the stdin-closed flag first, like the watchdog. Returns the run's result, the footer, the
+    /// feature reports sent and the output reports written.
+    fn stopped_run(
+        module: ServiceModule,
+        blank_on_stop: bool,
+        close_stdin: bool,
+        ignore_enable: bool,
+    ) -> StoppedRun {
+        let interrupted = Arc::new(AtomicBool::new(false));
+        let closed: &'static AtomicBool = Box::leak(Box::new(AtomicBool::new(false)));
+        let stop = Arc::clone(&interrupted);
+        let mut transport = Transport::new([Step::Run(Box::new(move || {
+            if close_stdin {
+                closed.store(true, Ordering::SeqCst);
+            }
+            stop.store(true, Ordering::SeqCst);
+        }))]);
+        transport.descriptor = true;
+        transport.ignore_enable = ignore_enable;
+        let writes = Arc::clone(&transport.writes);
+        let outputs = Arc::clone(&transport.outputs);
+        let output = Output::default();
+        let writer = output.clone();
+        let configuration = LiveOptions {
+            software_mode: true,
+            max_reports: None,
+            stdin_closed: Some(closed),
+            blank_on_stop,
+            ..options()
+        };
+        let result = run_with_clock(
+            &mut InputReader::new(transport),
+            profile(),
+            DeviceContext {
+                module,
+                serial_number: None,
+            },
+            false,
+            json!({}),
+            configuration,
+            interrupted,
+            move |stop| {
+                Ok((
+                    simple_actions(stop, Arc::new(Mutex::new(Vec::new()))),
+                    writer,
+                ))
+            },
+            || 0,
+        );
+        let footer = output.rows().last().unwrap().clone();
+        let writes = writes.lock().unwrap().clone();
+        let outputs = outputs.lock().unwrap().clone();
+        StoppedRun {
+            result,
+            footer,
+            writes,
+            outputs,
+        }
+    }
+
+    fn mode_reports(module: ServiceModule, enabled: bool) -> Vec<u8> {
+        if module == ServiceModule::M4315 {
+            cooltek_sdk_masterhub::keypad::software_mode_report(enabled).to_vec()
+        } else {
+            dial::software_mode_report(enabled).to_vec()
+        }
+    }
+
+    /// The output reports that draw every key, or the dial screen, black (65-byte reports, as the fake declares).
+    fn blank_reports(module: ServiceModule) -> Vec<Vec<u8>> {
+        if module == ServiceModule::M4315 {
+            let black = crate::display_artwork::encode(&image::RgbImage::new(72, 72)).unwrap();
+            (0..15)
+                .flat_map(|key| {
+                    cooltek_sdk_masterhub::keypad::JpegPackets::new(key, &black, 65)
+                        .unwrap()
+                        .collect::<Vec<_>>()
+                })
+                .collect()
+        } else {
+            let black = crate::dial_artwork::encode(&image::RgbImage::new(240, 240)).unwrap();
+            dial::JpegPackets::new(&black, 65).unwrap().collect()
+        }
+    }
+
+    #[test]
+    fn blank_on_stop_draws_the_screens_black_and_keeps_software_mode_after_a_signal() {
+        for module in [ServiceModule::M4315, ServiceModule::M131E] {
+            let StoppedRun {
+                result,
+                footer,
+                writes,
+                outputs,
+            } = stopped_run(module, true, false, false);
+            result.unwrap();
+            assert_eq!(footer["reason"], "interrupted");
+            assert!(footer["error"].is_null());
+            // No hardware-mode command: the next run's software-mode command is taken.
+            assert_eq!(writes, [mode_reports(module, true)]);
+            assert_eq!(outputs, blank_reports(module));
+        }
+    }
+
+    #[test]
+    fn blank_on_stop_still_restores_hardware_mode_when_stdin_closed() {
+        for module in [ServiceModule::M4315, ServiceModule::M131E] {
+            let StoppedRun {
+                result,
+                footer,
+                writes,
+                outputs,
+            } = stopped_run(module, true, true, false);
+            result.unwrap();
+            assert_eq!(footer["reason"], "stdin_closed");
+            assert_eq!(
+                writes,
+                [mode_reports(module, true), mode_reports(module, false)]
+            );
+            assert!(outputs.is_empty());
+        }
+    }
+
+    #[test]
+    fn without_blank_on_stop_a_signal_restores_hardware_mode_and_draws_nothing() {
+        for module in [ServiceModule::M4315, ServiceModule::M131E] {
+            let StoppedRun {
+                result,
+                footer,
+                writes,
+                outputs,
+            } = stopped_run(module, false, false, false);
+            result.unwrap();
+            assert_eq!(footer["reason"], "interrupted");
+            assert_eq!(
+                writes,
+                [mode_reports(module, true), mode_reports(module, false)]
+            );
+            assert!(outputs.is_empty());
+        }
+    }
+
+    #[test]
+    fn an_ignored_software_mode_command_ends_the_run_without_a_hardware_mode_command() {
+        for module in [ServiceModule::M4315, ServiceModule::M131E] {
+            for blank_on_stop in [false, true] {
+                let StoppedRun {
+                    result,
+                    footer,
+                    writes,
+                    outputs,
+                } = stopped_run(module, blank_on_stop, false, true);
+                let error = result.unwrap_err();
+                assert!(error.contains(SOFTWARE_MODE_IGNORED_TEXT), "{error}");
+                assert!(error.contains("unplug the"), "{error}");
+                assert_eq!(
+                    footer["reason"],
+                    crate::service_events::SOFTWARE_MODE_IGNORED
+                );
+                assert_eq!(footer["error"], error);
+                // Neither a hardware-mode command nor blank images: the module never left hardware mode.
+                assert_eq!(writes, [mode_reports(module, true)]);
+                assert!(outputs.is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn a_failed_software_mode_command_restores_hardware_mode_instead_of_blanking() {
+        for module in [ServiceModule::M4315, ServiceModule::M131E] {
+            let interrupted = Arc::new(AtomicBool::new(false));
+            let closed: &'static AtomicBool = Box::leak(Box::new(AtomicBool::new(false)));
+            let mut transport = Transport::new([]);
+            transport.descriptor = true;
+            transport.fail_enable = true;
+            let writes = Arc::clone(&transport.writes);
+            let outputs = Arc::clone(&transport.outputs);
+            let output = Output::default();
+            let writer = output.clone();
+            let error = run_with_clock(
+                &mut InputReader::new(transport),
+                profile(),
+                DeviceContext {
+                    module,
+                    serial_number: None,
+                },
+                false,
+                json!({}),
+                LiveOptions {
+                    software_mode: true,
+                    max_reports: None,
+                    stdin_closed: Some(closed),
+                    blank_on_stop: true,
+                    ..options()
+                },
+                interrupted,
+                move |stop| {
+                    Ok((
+                        simple_actions(stop, Arc::new(Mutex::new(Vec::new()))),
+                        writer,
+                    ))
+                },
+                || 0,
+            )
+            .unwrap_err();
+            assert!(error.contains("enable failed"), "{error}");
+            assert_eq!(output.rows().last().unwrap()["reason"], "error");
+            // The module's mode is unknown: the hardware-mode command is attempted, as without the flag.
+            assert_eq!(
+                *writes.lock().unwrap(),
+                [mode_reports(module, true), mode_reports(module, false)]
+            );
+            assert!(outputs.lock().unwrap().is_empty());
+        }
+    }
+
+    #[test]
+    fn blank_on_stop_requires_software_mode_and_the_stdin_watchdog() {
+        let closed: &'static AtomicBool = Box::leak(Box::new(AtomicBool::new(false)));
+        for (software_mode, stdin_closed) in [(false, Some(closed)), (true, None)] {
+            let configuration = LiveOptions {
+                software_mode,
+                stdin_closed,
+                blank_on_stop: true,
+                ..options()
+            };
+            let error = validate_options(configuration, &device()).unwrap_err();
+            assert!(error.contains("blanking on stop"), "{error}");
+        }
     }
 
     #[test]
@@ -7720,8 +8086,11 @@ mod tests {
         fn read_timeout(&self, _: &mut [u8], _: i32) -> HidResult<usize> {
             Ok(0)
         }
-        fn get_feature_report(&self, _: &mut [u8]) -> HidResult<usize> {
-            panic!("runtime must not query features")
+        fn get_feature_report(&self, buffer: &mut [u8]) -> HidResult<usize> {
+            // Only the software-mode command's read-back, which follows `on`.
+            assert_eq!(buffer[0], 0x03, "runtime must not query other features");
+            assert_eq!(self.log.lock().unwrap().last(), Some(&"on"));
+            Ok(buffer.len())
         }
         fn send_feature_report(&self, bytes: &[u8]) -> HidResult<()> {
             self.log
@@ -7753,6 +8122,98 @@ mod tests {
             buffer[..descriptor.len()].copy_from_slice(&descriptor);
             Ok(descriptor.len())
         }
+    }
+
+    /// A thread-safe M4315 HID fake that logs mode reports as `on` and `off` and keeps every output report.
+    #[derive(Default)]
+    struct ScreenHid {
+        log: Mutex<Vec<&'static str>>,
+        outputs: Mutex<Vec<Vec<u8>>>,
+    }
+    impl ReportTransport for ScreenHid {
+        fn read_timeout(&self, _: &mut [u8], timeout: i32) -> HidResult<usize> {
+            thread::sleep(Duration::from_millis(timeout as u64));
+            Ok(0)
+        }
+        fn get_feature_report(&self, buffer: &mut [u8]) -> HidResult<usize> {
+            assert_eq!(buffer[0], 0x03, "runtime must not query other features");
+            assert_eq!(self.log.lock().unwrap().last(), Some(&"on"));
+            Ok(buffer.len())
+        }
+        fn send_feature_report(&self, bytes: &[u8]) -> HidResult<()> {
+            self.log
+                .lock()
+                .unwrap()
+                .push(if bytes[2] == 1 { "on" } else { "off" });
+            Ok(())
+        }
+        fn write_output(&self, data: &[u8]) -> HidResult<usize> {
+            self.outputs.lock().unwrap().push(data.to_vec());
+            Ok(data.len())
+        }
+        fn get_report_descriptor(&self, buffer: &mut [u8]) -> HidResult<usize> {
+            let descriptor = [0x85, 0x02, 0x75, 0x08, 0x95, 64, 0x91, 0x02];
+            buffer[..descriptor.len()].copy_from_slice(&descriptor);
+            Ok(descriptor.len())
+        }
+    }
+
+    #[test]
+    fn a_display_run_blanks_through_its_closed_write_gate_once_the_display_stopped() {
+        let hid = Arc::new(ScreenHid::default());
+        let shared = SharedTransport::new(Arc::clone(&hid));
+        let display = crate::display_sink::live_display(
+            &shared,
+            Some(ModuleKind::M4315),
+            PreparedKeyArtwork::prepare().unwrap(),
+        )
+        .unwrap();
+        let interrupted = Arc::new(AtomicBool::new(false));
+        let stop = Arc::clone(&interrupted);
+        let drawn = Arc::clone(&hid);
+        // Stopped once the first page is fully drawn.
+        let controller = thread::spawn(move || {
+            let full = blank_reports(ServiceModule::M4315).len() / 2;
+            assert!(wait_until(|| drawn.outputs.lock().unwrap().len() >= full));
+            thread::sleep(Duration::from_millis(50));
+            stop.store(true, Ordering::SeqCst);
+        });
+        let closed: &'static AtomicBool = Box::leak(Box::new(AtomicBool::new(false)));
+        let configuration = LiveOptions {
+            max_reports: None,
+            stdin_closed: Some(closed),
+            blank_on_stop: true,
+            ..keypad_options(1)
+        };
+        let output = Output::default();
+        let writer = output.clone();
+        let result = run_inner(
+            &mut InputReader::new(shared.clone()),
+            keypad_profile(),
+            keypad_device(),
+            false,
+            json!({}),
+            configuration,
+            interrupted,
+            Some(display),
+            move |stop| {
+                Ok((
+                    simple_actions(stop, Arc::new(Mutex::new(Vec::new()))),
+                    writer,
+                ))
+            },
+            || 0,
+        );
+        controller.join().unwrap();
+        result.unwrap();
+        let footer = output.rows().last().unwrap().clone();
+        assert_eq!(footer["reason"], "interrupted");
+        assert_eq!(footer["display_stopped"], true);
+        assert_eq!(*hid.log.lock().unwrap(), ["on"]);
+        let outputs = hid.outputs.lock().unwrap();
+        let blank = blank_reports(ServiceModule::M4315);
+        assert!(outputs.len() > blank.len());
+        assert_eq!(outputs[outputs.len() - blank.len()..], blank[..]);
     }
 
     struct GatedRun {

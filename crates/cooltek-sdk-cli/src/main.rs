@@ -281,6 +281,8 @@ enum DialCommand {
         path_hex: Option<DevicePath>,
         /// After sending, read report 0x03 back and print its length: a full
         /// reply means the dial took the command, an empty one that it ignored it.
+        /// Software mode only: a read from a dial in hardware mode makes it ignore
+        /// software mode until it is replugged or re-enumerated.
         #[arg(long, requires = "path_hex")]
         read_back: bool,
     },
@@ -299,6 +301,9 @@ enum DialCommand {
         path_hex: Option<DevicePath>,
     },
     /// Explicitly query current firmware fields and backlight on a selected dial.
+    /// Only in software mode: a dial queried in hardware mode (its built-in
+    /// animation running) ignores software mode until it is replugged or
+    /// re-enumerated.
     Info {
         #[arg(long, value_parser = parse_path)]
         path_hex: DevicePath,
@@ -337,6 +342,8 @@ enum KeypadCommand {
         path_hex: Option<DevicePath>,
         /// After sending, read report 0x03 back and print its length: a full
         /// reply means the keypad took the command, an empty one that it ignored it.
+        /// Software mode only: a read from a keypad in hardware mode makes it ignore
+        /// software mode until it is replugged or re-enumerated.
         #[arg(long, requires = "path_hex")]
         read_back: bool,
     },
@@ -662,14 +669,26 @@ fn feature_command(
     }))
 }
 
+/// Refused before anything is opened: a read of report 0x03 right after the
+/// hardware-mode command reaches a module in hardware mode, and that makes the
+/// keypad and the dial ignore every later software-mode command until they are
+/// replugged or re-enumerated (measured 19 November 2026,
+/// docs/masterhub-hardware-results.md).
+const READ_BACK_HARDWARE_REFUSED: &str = "--read-back works only with `software`: reading report 0x03 from a module in hardware mode makes it ignore software mode until it is replugged or re-enumerated, and a hardware-mode reply is empty either way";
+
 /// Previews a mode report, or sends it to the selected module and, with
-/// `read_back`, prints what the module answered on report 0x03.
+/// `read_back` (software mode only), prints what the module answered on
+/// report 0x03.
 fn mode_command(
-    report: [u8; dial::FEATURE_REPORT_LENGTH],
+    software: bool,
     path: Option<DevicePath>,
     read_back: bool,
     open: OpenModule,
+    report: [u8; dial::FEATURE_REPORT_LENGTH],
 ) -> Result<(), Box<dyn Error>> {
+    if read_back && !software {
+        return Err(READ_BACK_HARDWARE_REFUSED.into());
+    }
     let Some(path) = path else {
         return feature_command(report, None, open);
     };
@@ -714,12 +733,16 @@ fn dial_command(command: DialCommand) -> Result<(), Box<dyn Error>> {
             mode,
             path_hex,
             read_back,
-        } => mode_command(
-            dial::software_mode_report(matches!(mode, ModeArg::Software)),
-            path_hex,
-            read_back,
-            open_dial,
-        ),
+        } => {
+            let software = matches!(mode, ModeArg::Software);
+            mode_command(
+                software,
+                path_hex,
+                read_back,
+                open_dial,
+                dial::software_mode_report(software),
+            )
+        }
         DialCommand::Backlight { value, path_hex } => {
             feature_command(dial::backlight_report(value)?, path_hex, open_dial)
         }
@@ -877,12 +900,16 @@ fn keypad_command(command: KeypadCommand) -> Result<(), Box<dyn Error>> {
             mode,
             path_hex,
             read_back,
-        } => mode_command(
-            keypad::software_mode_report(matches!(mode, ModeArg::Software)),
-            path_hex,
-            read_back,
-            open_keypad,
-        ),
+        } => {
+            let software = matches!(mode, ModeArg::Software);
+            mode_command(
+                software,
+                path_hex,
+                read_back,
+                open_keypad,
+                keypad::software_mode_report(software),
+            )
+        }
         KeypadCommand::Jpeg {
             file,
             key_index,
@@ -1531,6 +1558,27 @@ mod tests {
             assert!(parse(&[]).is_ok());
             // A preview sends nothing, so there is nothing to read back.
             assert!(parse(&["--read-back"]).is_err());
+        }
+    }
+
+    #[test]
+    fn a_hardware_mode_read_back_is_refused_before_anything_is_opened() {
+        fn never_opened(_: &[u8]) -> Result<HidDevice, Box<dyn Error>> {
+            panic!("the module must not be opened");
+        }
+        for report in [
+            dial::software_mode_report(false),
+            keypad::software_mode_report(false),
+        ] {
+            let error = mode_command(
+                false,
+                Some(parse_path("61ff").unwrap()),
+                true,
+                never_opened,
+                report,
+            )
+            .unwrap_err();
+            assert_eq!(error.to_string(), READ_BACK_HARDWARE_REFUSED);
         }
     }
 

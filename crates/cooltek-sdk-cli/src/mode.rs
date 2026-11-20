@@ -20,3 +20,22 @@ pub fn set<T: ReportTransport + ?Sized>(
     }
     .map_err(|error| error.to_string())
 }
+
+/// Sends the software-mode command and reads report `0x03` back, returning the
+/// reply. An empty reply means the module ignored the command: one that has been sent a feature read
+/// (any GET, such as this read-back after the hardware-mode command) while in
+/// hardware mode ignores every later software-mode command until it is
+/// unplugged, loses power or is re-enumerated. A hand-back with the
+/// hardware-mode command alone does not (docs/masterhub-hardware-results.md,
+/// 19 November 2026).
+pub fn enter<T: ReportTransport + ?Sized>(
+    transport: &T,
+    module: Option<ModuleKind>,
+) -> Result<Vec<u8>, String> {
+    match module {
+        Some(ModuleKind::M131E) => dial::enter_software_mode_with_reply(transport),
+        Some(ModuleKind::M4315) => keypad::enter_software_mode_with_reply(transport),
+        _ => return Err("software mode is supported only for M131E and M4315".into()),
+    }
+    .map_err(|error| error.to_string())
+}

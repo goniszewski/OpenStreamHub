@@ -17,8 +17,8 @@
 //! Every other platform uses the clock-gap fallback: a 1 s poll compares the
 //! monotonic clock (which does not advance while the machine sleeps) with the
 //! wall clock. It can only report `Resume` after the fact; there is no clean
-//! pre-sleep stop, so the OS will have interrupted the service without a
-//! hardware-mode restore. A forward wall-clock adjustment of at least
+//! pre-sleep stop, so the OS will have interrupted the service without its
+//! cleanup (blanking, or a hardware-mode restore). A forward wall-clock adjustment of at least
 //! `GAP_THRESHOLD` (e.g. NTP) also reads as a wake.
 
 use std::{

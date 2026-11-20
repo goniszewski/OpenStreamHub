@@ -86,6 +86,27 @@ pub fn set_software_mode<T: ReportTransport + ?Sized>(
     send_feature(transport, &software_mode_report(enabled))
 }
 
+/// Enters software mode like [`set_software_mode`], then reads report `0x03`
+/// back with [`crate::command_with_reply`] and returns the reply.
+///
+/// A dial that takes the command answers with a full 32-byte report. One that
+/// ignores it answers with zero bytes: a dial that was sent a feature read
+/// (such as [`read_backlight`] or a report `0x03` read) while in hardware mode
+/// ignores every later software-mode command until it is unplugged, loses
+/// power or is re-enumerated. A hand-back with [`set_software_mode`]`(false)`
+/// alone does not (docs/masterhub-hardware-results.md, 19 November 2026).
+///
+/// # Errors
+/// Same as [`set_software_mode`], or a failed read-back as described in
+/// [`crate::command_with_reply`].
+pub fn enter_software_mode_with_reply<T: ReportTransport + ?Sized>(
+    transport: &T,
+) -> HidResult<Vec<u8>> {
+    let report = software_mode_report(true);
+    crate::transport::check_feature_report_length(transport, report[0], report.len())?;
+    crate::transport::command_with_reply(transport, &report)
+}
+
 /// Shared send path for the dial's fixed 32-byte feature commands.
 ///
 /// Consults the HID descriptor (read-only) first and sends nothing when it
@@ -435,6 +456,37 @@ mod tests {
         set_color(&exact, [1, 2, 3]).unwrap();
         set_software_mode(&exact, false).unwrap();
         assert_eq!(exact.feature_writes.borrow().len(), 3);
+    }
+
+    #[test]
+    fn entering_software_mode_reads_report_3_back_after_the_length_check() {
+        let wrong = Fake {
+            descriptor: Some(vec![0x75, 0x08, 0x85, 0x03, 0x95, 63, 0xb1, 0x02]),
+            ..Fake::default()
+        };
+        assert!(enter_software_mode_with_reply(&wrong).is_err());
+        assert!(wrong.feature_writes.borrow().is_empty());
+        assert!(wrong.feature_queries.borrow().is_empty());
+
+        let mut reply = vec![3];
+        reply.resize(FEATURE_REPORT_LENGTH, 0);
+        let taken = Fake {
+            response: reply.clone(),
+            received: FEATURE_REPORT_LENGTH,
+            ..Fake::default()
+        };
+        assert_eq!(enter_software_mode_with_reply(&taken).unwrap(), reply);
+        assert_eq!(
+            *taken.feature_writes.borrow(),
+            [software_mode_report(true).to_vec()]
+        );
+        assert_eq!(taken.feature_queries.borrow()[0][0], 3);
+        // A dial that ignored the command answers with zero bytes.
+        assert!(
+            enter_software_mode_with_reply(&Fake::default())
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]

@@ -88,8 +88,8 @@ Every switch bumps the session's `profile_generation` (shown in `session://state
 
 All of the following was checked only with unit tests (fake runner, fake clock, simulated focus events):
 
-- Whether `NSWorkspaceDidActivateApplicationNotification` fires for every app switch: Cmd-Tab, Dock clicks, Mission Control, full-screen spaces, and apps that activate without a window.
-- Whether `frontmostApplication` already reports the newly activated app when the notification is delivered. Reading the app from the notification's `userInfo` would avoid that question, but needs a new `objc2-foundation` feature (`NSDictionary`), so it was not done.
+- Whether `NSWorkspaceDidActivateApplicationNotification` fires for every app switch. A standalone Swift probe (23 November 2026, macOS 27, run from iTerm, not the app) saw it fire for all 11 activations made with `open -a` (Finder, Calculator, System Settings), including 5 about 250 ms apart. Not yet checked: Cmd-Tab, Dock clicks, Mission Control, full-screen spaces, and apps that activate without a window.
+- `frontmostApplication` read on the main thread inside the notification block matched the notification's own `userInfo` app in all 11 events, so the race this note worried about did not show up (the probe read it on the main thread, as `focus.rs` does). Only that one probe run; the app itself was not run.
 - Whether 400 ms is the right debounce for real app switching.
 - Behavior with several displays, Stage Manager, and helper processes that have their own bundle IDs, for example browser helpers.
 - How quickly the stop-and-restart completes on real hardware, and how a module behaves when it is switched out of software mode and back in quick succession.

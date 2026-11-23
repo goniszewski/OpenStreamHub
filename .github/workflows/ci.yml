@@ -1,12 +1,19 @@
 name: CI
 
-# macOS runners bill at a multiple of Linux minutes, so CI runs the essentials:
-# one Apple Silicon job on pull requests that touch code (docs-only changes are
-# skipped). It does not run on pushes to master, to keep Actions spend down; run
-# it by hand from Actions -> CI -> Run workflow, which also adds the Intel
-# compile check, covered otherwise by the release workflow's per-arch bundles.
+# macOS runners bill at about 10x Linux minutes, so CI is split by cost:
+#
+#   linux  every pull request: fmt, clippy and tests for the root Rust
+#          workspace, plus the frontend typecheck and tests.
+#   macos  only when the pull request is ready for review, touches code that
+#          is macOS-specific (see `changes` below) and `linux` passed: the
+#          Tauri app crate and the plugin tests.
+#
+# It does not run on pushes to master. Run everything by hand from
+# Actions -> CI -> Run workflow, which also adds the Intel compile check
+# (covered otherwise by the release workflow's per-arch bundles).
 on:
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
     paths-ignore:
       - "**/*.md"
       - "docs/**"
@@ -24,10 +31,87 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  check:
+  linux:
+    name: check (linux)
+    # Draft pull requests wait for ready_for_review; pushes to them cost nothing.
+    if: github.event_name == 'workflow_dispatch' || !github.event.pull_request.draft
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      # hidapi (cooltek-sdk-masterhub) links libudev on Linux.
+      - name: Install system libraries
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libudev-dev pkg-config
+
+      - name: Install Rust toolchain
+        run: |
+          rustup show active-toolchain || rustup toolchain install
+          rustc --version
+          cargo --version
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22.22"
+          cache: npm
+          cache-dependency-path: apps/open-stream-hub/package-lock.json
+
+      - name: cargo fmt
+        run: cargo fmt --check
+      - name: cargo clippy (workspace)
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      # macro_script_rejects_bad_stdin_before_posting_anything drives osascript,
+      # so it only runs in the macOS job (`cargo test -p cooltek-sdk-service macos::`).
+      - name: cargo test (workspace)
+        run: cargo test --workspace --locked -- --skip macro_script_rejects_bad_stdin_before_posting_anything
+
+      - name: npm ci
+        working-directory: apps/open-stream-hub
+        run: npm ci
+      - name: Typecheck
+        working-directory: apps/open-stream-hub
+        run: npx tsc --noEmit
+      - name: Frontend tests
+        working-directory: apps/open-stream-hub
+        run: npm test
+
+  # Cheap Linux job that decides whether the macOS job is worth its price.
+  changes:
+    name: detect macOS-relevant changes
+    needs: linux
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      macos: ${{ steps.diff.outputs.macos }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - id: diff
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" != "pull_request" ]; then
+            echo "macos=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # The Tauri app crate, the macOS plugins, the crates with macOS-only
+          # code (HID, service, IPC), the toolchain and lockfiles, and this file.
+          if git diff --name-only "$BASE_SHA"...HEAD | grep -Eq '^(apps/open-stream-hub/src-tauri/|plugins/|crates/(cooltek-sdk-masterhub|cooltek-sdk-service|local-ipc)/|Cargo\.(toml|lock)$|rust-toolchain\.toml$|\.github/workflows/ci\.yml$)'; then
+            echo "macos=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "macos=false" >> "$GITHUB_OUTPUT"
+            echo "No macOS-relevant changes; skipping the macOS job."
+          fi
+
+  macos:
     name: check (${{ matrix.label }})
+    needs: changes
+    if: needs.changes.outputs.macos == 'true'
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -49,36 +133,20 @@ jobs:
             . -> target
             apps/open-stream-hub/src-tauri -> target
 
+      # Only the sidecar script needs Node here (built-in modules only), so no npm ci.
       - uses: actions/setup-node@v7
         with:
           node-version: "22.22"
-          cache: npm
-          cache-dependency-path: apps/open-stream-hub/package-lock.json
-
-      # --- Root Rust workspace ---
-      - name: cargo fmt
-        run: cargo fmt --check
-      - name: cargo clippy (workspace)
-        run: cargo clippy --workspace --all-targets --locked -- -D warnings
-      - name: cargo test (workspace)
-        run: cargo test --workspace --locked
-
-      # --- Desktop app frontend ---
-      - name: npm ci
-        working-directory: apps/open-stream-hub
-        run: npm ci
-      - name: Typecheck
-        working-directory: apps/open-stream-hub
-        run: npx tsc --noEmit
-      - name: Frontend tests
-        working-directory: apps/open-stream-hub
-        run: npm test
 
       # --- Official plugins (the system Python they run with; players and terminals are faked) ---
       - name: Now Playing plugin tests
         run: /usr/bin/python3 -B -m unittest discover -s plugins/com.github.goniszewski.nowplaying/tests
       - name: Claude Code plugin tests
         run: /usr/bin/python3 -B -m unittest discover -s plugins/com.github.goniszewski.claudecode/tests
+
+      # --- macOS-only unit tests in the service crate (they call osascript) ---
+      - name: cargo test (service macos module)
+        run: "cargo test -p cooltek-sdk-service --locked macos::"
 
       # --- Desktop app Rust (needs the sidecar file to exist) ---
       - name: Prepare sidecar

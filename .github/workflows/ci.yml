@@ -62,8 +62,10 @@ jobs:
         run: cargo fmt --check
       - name: cargo clippy (workspace)
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      # macro_script_rejects_bad_stdin_before_posting_anything drives osascript,
+      # so it only runs in the macOS job (`cargo test -p cooltek-sdk-service macos::`).
       - name: cargo test (workspace)
-        run: cargo test --workspace --locked
+        run: cargo test --workspace --locked -- --skip macro_script_rejects_bad_stdin_before_posting_anything
 
       - name: npm ci
         working-directory: apps/open-stream-hub
@@ -141,6 +143,10 @@ jobs:
         run: /usr/bin/python3 -B -m unittest discover -s plugins/com.github.goniszewski.nowplaying/tests
       - name: Claude Code plugin tests
         run: /usr/bin/python3 -B -m unittest discover -s plugins/com.github.goniszewski.claudecode/tests
+
+      # --- macOS-only unit tests in the service crate (osascript, CoreGraphics code paths) ---
+      - name: cargo test (service macos module)
+        run: cargo test -p cooltek-sdk-service --locked macos::
 
       # --- Desktop app Rust (needs the sidecar file to exist) ---
       - name: Prepare sidecar

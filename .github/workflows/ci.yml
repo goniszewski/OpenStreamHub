@@ -144,9 +144,9 @@ jobs:
       - name: Claude Code plugin tests
         run: /usr/bin/python3 -B -m unittest discover -s plugins/com.github.goniszewski.claudecode/tests
 
-      # --- macOS-only unit tests in the service crate (osascript, CoreGraphics code paths) ---
+      # --- macOS-only unit tests in the service crate (they call osascript) ---
       - name: cargo test (service macos module)
-        run: cargo test -p cooltek-sdk-service --locked macos::
+        run: "cargo test -p cooltek-sdk-service --locked macos::"
 
       # --- Desktop app Rust (needs the sidecar file to exist) ---
       - name: Prepare sidecar

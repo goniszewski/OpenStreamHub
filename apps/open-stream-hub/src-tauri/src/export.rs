@@ -193,6 +193,84 @@ pub fn export(
     })
 }
 
+/// `(slug, sort stamp)` of `<slug>-quick-map-yyyymmdd-hhmmss.svg`, or None for any other name.
+fn quick_map_stamp(name: &str) -> Option<(&str, &str)> {
+    let body = name.strip_suffix(".svg")?;
+    let stamp = body.get(body.len().checked_sub(STAMP_LEN)?..)?;
+    let slug = body[..body.len() - STAMP_LEN].strip_suffix('-')?;
+    let stamp_ok = stamp.bytes().enumerate().all(|(index, byte)| {
+        if index == 8 {
+            byte == b'-'
+        } else {
+            byte.is_ascii_digit()
+        }
+    });
+    let slug_ok = slug.ends_with("-quick-map")
+        && slug.len() <= MAX_SLUG + QUICK_MAP_SUFFIX.len()
+        && slug
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-');
+    (stamp_ok && slug_ok).then_some((slug, stamp))
+}
+
+const QUICK_MAP_SUFFIX: &str = "-quick-map";
+const MAX_QUICK_MAP_BYTES: usize = 2 * 1024 * 1024;
+
+/// Writes the Quick map drawing as `<app data>/exports/<profile>-quick-map-<stamp>.svg`. The webview cannot save a file by
+/// itself, so the drawing comes from the front end; it must be one SVG document. Never overwrites; keeps the newest
+/// `KEEP_EXPORTS` per profile.
+pub fn export_quick_map(
+    svg: &str,
+    profile_name: &str,
+    app_data: &Path,
+    generated_at: u64,
+) -> Result<ExportResult, String> {
+    let trimmed = svg.trim_start();
+    if svg.len() > MAX_QUICK_MAP_BYTES
+        || !trimmed.starts_with("<svg")
+        || !svg.trim_end().ends_with("</svg>")
+    {
+        return Err("the Quick map is not a valid SVG drawing".into());
+    }
+    let directory = app_data.join(DIRECTORY);
+    let (_, stamp) = utc_stamps(generated_at);
+    let name = format!("{}{QUICK_MAP_SUFFIX}-{stamp}.svg", slug(profile_name));
+    let path = write_new(&directory, &name, svg.as_bytes(), "Quick map")?;
+    prune_per_slug(&directory, KEEP_EXPORTS, quick_map_stamp);
+    Ok(ExportResult {
+        path: path.to_string_lossy().into_owned(),
+        bytes: svg.len() as u64,
+        dropped_secrets: Vec::new(),
+    })
+}
+
+/// The path of a saved Quick map by its file name; only a name `export_quick_map` could have written, and only one that
+/// exists in the exports folder, so the webview cannot point the Finder anywhere else.
+pub fn quick_map_path(app_data: &Path, name: &str) -> Result<PathBuf, String> {
+    if quick_map_stamp(name).is_none() {
+        return Err("that is not a saved Quick map".into());
+    }
+    let path = app_data.join(DIRECTORY).join(name);
+    match path.symlink_metadata() {
+        Ok(meta) if meta.is_file() => Ok(path),
+        _ => Err("that Quick map is no longer in the exports folder".into()),
+    }
+}
+
+/// Shows a saved Quick map in the Finder, selected.
+pub fn reveal_quick_map(app_data: &Path, name: &str) -> Result<(), String> {
+    let path = quick_map_path(app_data, name)?;
+    let status = std::process::Command::new("/usr/bin/open")
+        .arg("-R")
+        .arg(&path)
+        .status()
+        .map_err(|_| "Could not open the Finder.".to_string())?;
+    status
+        .success()
+        .then_some(())
+        .ok_or_else(|| "Could not open the Finder.".to_string())
+}
+
 pub fn now_seconds() -> Result<u64, String> {
     Ok(SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -312,5 +390,24 @@ mod tests {
         let error = export(&profile, root.path(), 1_791_201_600).unwrap_err();
         assert!(!error.is_empty());
         assert!(!root.path().join("exports").exists());
+    }
+
+    #[test]
+    fn quick_map_is_written_once_and_checked() {
+        let root = tempfile::tempdir().unwrap();
+        let svg = "<svg xmlns=\"http://www.w3.org/2000/svg\"></svg>";
+        let saved = export_quick_map(svg, "My Profile!", root.path(), 1_700_000_000).unwrap();
+        assert!(
+            saved.path.ends_with("-quick-map-20231114-221320.svg")
+                && saved.path.contains("/exports/my-profile-quick-map-")
+        );
+        assert_eq!(fs::read_to_string(&saved.path).unwrap(), svg);
+        assert!(export_quick_map(svg, "My Profile!", root.path(), 1_700_000_000).is_err());
+        assert!(export_quick_map("<html></html>", "x", root.path(), 1_700_000_001).is_err());
+        assert_eq!(
+            quick_map_stamp("my-profile-quick-map-20231114-221320.svg"),
+            Some(("my-profile-quick-map", "20231114-221320"))
+        );
+        assert_eq!(quick_map_stamp("my-profile-20231114-221320.json"), None);
     }
 }

@@ -16,10 +16,10 @@ callouts, a legend) meant purely as a reminder of what every key, knob, fader an
 - It draws the profile open in the editor. That follows the running profile (a focused-app rule or a profile key switches
   it) unless there are unsaved edits, in which case the map shows those edits.
 
-## Saving and printing
+## Saving
 
-On screen the drawing uses the app theme (light or dark). **Save as SVG**, **Copy SVG** and **Print** use a paper copy
-(dark ink on white), so the file reads the same anywhere. Print opens the system print dialog for the drawing alone.
+On screen the drawing uses the app theme (light or dark). **Save as SVG** and **Copy SVG** use a paper copy
+(dark ink on white), so the file reads the same anywhere. In the desktop app Save as SVG writes `<profile>-quick-map-<date>-<time>.svg` into the app's `exports` folder (next to profile exports; the newest 20 per profile are kept) and shows the path with a **Show in Finder** button, because the webview cannot download or print. To print it, open the saved file in a browser or Preview.
 Saving uses a browser-style download from the app window; if the webview does not offer it, use **Copy SVG** and paste into
 a file.
 

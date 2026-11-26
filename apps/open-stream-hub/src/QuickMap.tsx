@@ -1,15 +1,16 @@
 import { useMemo, useState, type ReactNode } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { Copy, Download, Map as MapIcon, Printer, X } from 'lucide-react';
+import { invoke, isTauri } from '@tauri-apps/api/core';
+import { Copy, Download, FolderOpen, Map as MapIcon, X } from 'lucide-react';
 import type { Profile, ServiceModule } from './contracts';
 import { ModalDialog } from './controls';
 import { useT } from './i18n-react';
 import { clipKeyLabel, quickMap, wrapText, type LegendLine, type MapControl, type MapModule, type QuickMap } from './quick-map-model';
 
 // A blueprint-style drawing of the open profile: line art of the modules it uses, a numbered callout on every bound control
-// and the legend underneath, all in one SVG so that saving or printing it keeps everything.
+// and the legend underneath, all in one SVG so that saving it keeps everything.
 export interface Palette { ink: string; paper: string; muted: string; accent: string }
-// On screen the drawing follows the app theme; a saved or printed copy is always dark ink on white paper.
+// On screen the drawing follows the app theme; a saved copy is always dark ink on white paper.
 export const screenPalette: Palette = { ink: 'var(--text)', paper: 'var(--panel)', muted: 'var(--muted)', accent: 'var(--accent)' };
 export const paperPalette: Palette = { ink: '#15151c', paper: '#ffffff', muted: '#5b6074', accent: '#4a24c9' };
 
@@ -193,41 +194,45 @@ export function quickMapSvg(map: QuickMap): string {
 }
 export const quickMapFileName = (name: string) => `${name.replace(/[^\p{L}\p{N}]+/gu, '-').replace(/^-+|-+$/g, '').toLowerCase() || 'profile'}-quick-map.svg`;
 
-// Prints the paper copy from a throw-away frame, so the rest of the app never shows up on the page.
-function printSvg(svg: string) {
-  const frame = document.createElement('iframe');
-  frame.setAttribute('aria-hidden', 'true');
-  frame.style.cssText = 'position:fixed;width:0;height:0;border:0;right:0;bottom:0';
-  frame.srcdoc = `<!doctype html><meta charset="utf-8"><style>@page{size:landscape;margin:10mm}html,body{margin:0}svg{width:100%;height:auto}</style>${svg}`;
-  frame.onload = () => { frame.contentWindow?.focus(); frame.contentWindow?.print(); setTimeout(() => frame.remove(), 1000); };
-  document.body.appendChild(frame);
-}
-
 export function QuickMapButton({ profile }: { profile: Profile }) {
   const t = useT();
   const [open, setOpen] = useState(false);
   const [copied, setCopied] = useState(false);
+  // Where the last save went, or why it failed.
+  const [saved, setSaved] = useState<{ ok: boolean; text: string; file?: string } | null>(null);
   // App renders often (device feed, run state); the map only changes with the profile.
   const map = useMemo(() => quickMap(profile), [profile]);
-  const save = () => {
+  const save = async () => {
+    // The desktop webview cannot download a blob, so the app writes the file (into its exports folder) and says where.
+    if (isTauri()) {
+      try {
+        const result = await invoke<{ path: string }>('export_quick_map', { request: { svg: quickMapSvg(map), profileName: profile.name } });
+        setSaved({ ok: true, text: t('quickMap.saved', { path: result.path }), file: result.path.split('/').pop() });
+      } catch (reason) { setSaved({ ok: false, text: t('quickMap.saveFailed', { reason: reason instanceof Error ? reason.message : String(reason) }) }); }
+      return;
+    }
     const url = URL.createObjectURL(new Blob([quickMapSvg(map)], { type: 'image/svg+xml' }));
     const link = document.createElement('a');
     link.href = url; link.download = quickMapFileName(profile.name);
     document.body.appendChild(link); link.click(); link.remove();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
+  const reveal = (file: string) => { invoke('reveal_quick_map', { name: file }).catch((reason: unknown) => setSaved({ ok: false, text: t('quickMap.saveFailed', { reason: reason instanceof Error ? reason.message : String(reason) }) })); };
   const copy = () => { void navigator.clipboard?.writeText(quickMapSvg(map)).then(() => { setCopied(true); setTimeout(() => setCopied(false), 2000); }).catch(() => {}); };
   return <>
     <button type="button" className="button compact quick-map-button" aria-haspopup="dialog" title={t('quickMap.openTip')} onClick={() => setOpen(true)}><MapIcon size={16} aria-hidden="true" />{t('quickMap.open')}</button>
-    <ModalDialog open={open} labelledBy="quick-map-title" onCancel={() => setOpen(false)} className="quick-map-dialog">
+    <ModalDialog open={open} labelledBy="quick-map-title" onCancel={() => { setOpen(false); setSaved(null); }} className="quick-map-dialog">
       <div className="quick-map-bar">
         <h2 id="quick-map-title">{t('quickMap.title')}</h2>
-        <button type="button" className="button compact" disabled={map.modules.length === 0} onClick={save}><Download size={15} aria-hidden="true" />{t('quickMap.save')}</button>
+        <button type="button" className="button compact" disabled={map.modules.length === 0} onClick={() => void save()}><Download size={15} aria-hidden="true" />{t('quickMap.save')}</button>
         <button type="button" className="button compact" disabled={map.modules.length === 0} onClick={copy}><Copy size={15} aria-hidden="true" />{copied ? t('quickMap.copied') : t('quickMap.copy')}</button>
-        <button type="button" className="button compact" disabled={map.modules.length === 0} onClick={() => printSvg(quickMapSvg(map))}><Printer size={15} aria-hidden="true" />{t('quickMap.print')}</button>
         <span className="spacer" />
-        <button type="button" className="button compact" autoFocus aria-label={t('quickMap.close')} onClick={() => setOpen(false)}><X size={15} aria-hidden="true" />{t('quickMap.close')}</button>
+        <button type="button" className="button compact" autoFocus aria-label={t('quickMap.close')} onClick={() => { setOpen(false); setSaved(null); }}><X size={15} aria-hidden="true" />{t('quickMap.close')}</button>
       </div>
+      {saved && <div className="quick-map-saved-row">
+        <p className={saved.ok ? 'fine-print quick-map-saved' : 'field-error quick-map-saved'} role={saved.ok ? 'status' : 'alert'}>{saved.text}</p>
+        {saved.ok && saved.file && <button type="button" className="button compact" onClick={() => reveal(saved.file!)}><FolderOpen size={15} aria-hidden="true" />{t('quickMap.reveal')}</button>}
+      </div>}
       <div className="quick-map-sheet" role="region" aria-label={t('quickMap.title')} tabIndex={0}>{open && <QuickMapDrawing map={map} />}</div>
     </ModalDialog>
   </>;

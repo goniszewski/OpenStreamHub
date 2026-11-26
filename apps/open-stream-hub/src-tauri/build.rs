@@ -27,6 +27,8 @@ fn main() {
             "mark_all_profiles_for_review",
             "validate_profile",
             "export_profile",
+            "export_quick_map",
+            "reveal_quick_map",
             "replay_demo",
             "preview_binding",
             "preview_keypad",

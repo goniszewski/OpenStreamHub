@@ -1104,3 +1104,12 @@ html[data-mod-held] [data-shortcut]:disabled::before { display:none; }
 .plugin-item details.advanced { margin-top:12px; }
 .plugin-item details.advanced summary { cursor:pointer; color:var(--muted); font-size:12px; user-select:none; }
 .plugin-log { max-height:200px; overflow:auto; font-size:11px; background:var(--panel); border:1px solid var(--line); border-radius:7px; padding:10px; white-space:pre-wrap; overflow-wrap:anywhere; }
+.quick-map-dialog { width:min(1040px,calc(100vw - 28px)); max-height:calc(100vh - 28px); padding:16px; display:none; flex-direction:column; gap:12px; }
+.quick-map-dialog[open] { display:flex; }
+.quick-map-bar { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+.quick-map-bar h2 { font-size:18px; margin:0 8px 0 0; }
+.quick-map-bar .spacer { flex:1; }
+.quick-map-bar .button { gap:6px; }
+.quick-map-sheet { overflow:auto; border:1px solid var(--line); border-radius:8px; background:var(--panel); }
+.quick-map-sheet:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+.quick-map-button { gap:6px; }

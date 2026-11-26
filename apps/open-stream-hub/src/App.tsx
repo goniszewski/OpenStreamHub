@@ -47,6 +47,7 @@ import { ModuleDrawer } from './ModuleDrawer';
 import { HistoryMenu } from './HistoryMenu';
 import { appNamesVersion, subscribeAppNames } from './app-names';
 import { useT } from './i18n-react';
+import { QuickMapButton } from './QuickMap';
 import { SidebarNav, readNavCollapsed, writeNavCollapsed } from './SidebarNav';
 import { RunningProfile, applyRunningProfile, runningProfileValue } from './RunningProfile';
 import { BuiltInProfiles } from './BuiltInProfilesPanel';
@@ -680,6 +681,7 @@ export default function App() {
         </div>
         <div className="header-actions"><span className={`device-status-pill ${deviceStatusKind}`} role="status" data-tip={deviceStatus}><Usb size={17} aria-hidden="true" />{deviceStatusKind === 'connected' && <span className="device-status-count" aria-hidden="true">{t('header.status.count', { count: connectedModules })}</span>}<span className="sr-only">{deviceStatus}</span></span>
           {focusHeader && <button type="button" className="focus-status" aria-label={focusHeader.text} data-tip={focusHeader.text} onClick={() => setManagerOpen(true)}><AppWindow size={17} aria-hidden="true" />{focusHeader.matched && <span className="focus-status-name">{focusHeader.matched}</span>}</button>}
+          <QuickMapButton profile={profile} />
           <RunHeaderControl run={runSession} />
           <div className="history-buttons" role="group" aria-label="Change history">
             <button className="icon-button" disabled={disabled || !state.canUndo} data-shortcut={hint('Z', mac)} aria-label={t('header.undo')} data-tip={withHint(state.undoLabels[0] ? t('header.undoNamed', { change: state.undoLabels[0] }) : t('header.undo'), 'Z', mac)} onClick={() => { session.undo(); }}><Undo2 size={18} /></button>

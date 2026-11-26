@@ -1104,6 +1104,17 @@ html[data-mod-held] [data-shortcut]:disabled::before { display:none; }
 .plugin-item details.advanced { margin-top:12px; }
 .plugin-item details.advanced summary { cursor:pointer; color:var(--muted); font-size:12px; user-select:none; }
 .plugin-log { max-height:200px; overflow:auto; font-size:11px; background:var(--panel); border:1px solid var(--line); border-radius:7px; padding:10px; white-space:pre-wrap; overflow-wrap:anywhere; }
+.quick-map-dialog { width:min(1040px,calc(100vw - 28px)); max-height:calc(100vh - 28px); padding:16px; display:none; flex-direction:column; gap:12px; }
+.quick-map-dialog[open] { display:flex; }
+.quick-map-bar { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+.quick-map-bar h2 { font-size:18px; margin:0 8px 0 0; }
+.quick-map-bar .spacer { flex:1; }
+.quick-map-bar .button { gap:6px; }
+.quick-map-sheet { overflow:auto; border:1px solid var(--line); border-radius:8px; background:var(--panel); }
+.quick-map-sheet:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+.quick-map-button { gap:6px; }
+.quick-map-saved-row { display:flex; align-items:center; gap:10px; margin:8px 0 0; }.quick-map-saved-row .button { flex:none; gap:6px; }
+.quick-map-saved { margin:0; user-select:all; overflow-wrap:anywhere; }
 .control-tip { max-height:calc(100vh - 16px); overflow:hidden; position:fixed; z-index:200; transform:translateX(-50%); width:max-content; max-width:280px; display:flex; flex-direction:column; gap:6px; padding:8px 10px; border:1px solid var(--line); border-radius:8px; background:var(--panel); color:var(--text); box-shadow:0 6px 20px rgba(0,0,0,.3); font-size:12px; line-height:1.35; text-align:left; pointer-events:none; animation:tip-in .12s ease both; }
 .control-tip-title { font-size:11px; font-weight:600; color:var(--muted); text-transform:uppercase; letter-spacing:.04em; }
 .control-tip-row { display:flex; flex-direction:column; gap:1px; }

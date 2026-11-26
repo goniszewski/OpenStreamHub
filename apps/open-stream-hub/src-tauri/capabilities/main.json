@@ -34,6 +34,8 @@
     "allow-mark-all-profiles-for-review",
     "allow-validate-profile",
     "allow-export-profile",
+    "allow-export-quick-map",
+    "allow-reveal-quick-map",
     "allow-replay-demo",
     "allow-preview-binding",
     "allow-preview-keypad",

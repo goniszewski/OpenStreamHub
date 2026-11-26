@@ -1043,6 +1043,35 @@ fn export_profile(
     state.export_profile(request)
 }
 
+/// `export_quick_map` arguments.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct QuickMapRequest {
+    svg: String,
+    profile_name: String,
+}
+
+// Writes the Quick map drawing as a local SVG file under `<app data>/exports/`.
+#[tauri::command]
+fn export_quick_map(
+    state: State<'_, AppState>,
+    request: QuickMapRequest,
+) -> Result<export::ExportResult, String> {
+    let app_data = state.app_data.as_deref().map_err(Clone::clone)?;
+    export::export_quick_map(
+        &request.svg,
+        &request.profile_name,
+        app_data,
+        export::now_seconds()?,
+    )
+}
+
+// Shows a saved Quick map in the Finder. Takes the file name `export_quick_map` returned, never a path.
+#[tauri::command(async)]
+fn reveal_quick_map(state: State<'_, AppState>, name: String) -> Result<(), String> {
+    export::reveal_quick_map(state.app_data.as_deref().map_err(Clone::clone)?, &name)
+}
+
 #[tauri::command]
 fn replay_demo(profile: Profile, kind: replay::DemoKind) -> Result<replay::ReplayResult, String> {
     replay::replay_demo(profile, kind)
@@ -2477,6 +2506,8 @@ pub fn run() {
             mark_all_profiles_for_review,
             validate_profile,
             export_profile,
+            export_quick_map,
+            reveal_quick_map,
             replay_demo,
             preview_binding,
             preview_keypad,

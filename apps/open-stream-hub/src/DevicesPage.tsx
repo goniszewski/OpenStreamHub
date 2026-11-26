@@ -17,6 +17,8 @@ import type { KnobOrientation } from './knob-orientation';
 import { ModuleArtImage, ModuleGlass } from './ModuleArt';
 import { dialScreen, knobControls, moduleArtwork } from './module-controls';
 import { livePointer, livePressed, livePulse } from './ModuleStage';
+import { useControlTooltip } from './ControlTooltip';
+import { controlTip } from './control-tooltip-model';
 import { RigPreview } from './RigPreview';
 import { ServicePanel } from './ServicePanel';
 import type { RunSession } from './ServicePanel';
@@ -128,6 +130,7 @@ export function HeroImage({ editor, profile, feed, knobOrientation, disabled = f
   const { selected, selection, isKeypad, keypadPath, currentKeypadPage, binding } = editor;
   const feedState = useSyncExternalStore(feed?.subscribe ?? noopSubscribe, feed?.getState ?? idleState, feed?.getState ?? idleState);
   const live = feedState.live[selected.id];
+  const tip = useControlTooltip(control => controlTip(profile, selected.id, control, isKeypad ? { keypadPage: currentKeypadPage, keypadPages: profile.keypad?.pages, keypadBack: keypadIsBack(keypadPath, control) } : {}));
   const lightingRecords = useSyncExternalStore(lighting.subscribe, lighting.getState, lighting.getState).shown;
   const isKnob = selected.id === 'm003k';
   const controls = isKnob ? knobControls(knobOrientation) : moduleArtwork[selected.id].controls;
@@ -149,13 +152,14 @@ export function HeroImage({ editor, profile, feed, knobOrientation, disabled = f
           className={`image-control${area.round ? ' round' : ''}${isKeypad ? ' key-display' : ''}${selection.control === area.control ? ' selected' : ''}${selected.id === 'm005s' ? (live?.faders[area.control] !== undefined ? ' live' : '') : livePressed(live, area.control)}${(isKeypad ? keySlotUsed(currentKeypadPage.slots[area.control], keypadIsBack(keypadPath, area.control)) : !!controlAction(profile, selected.id, area.control)) ? ' bound' : ' unbound'}`}
           style={{ left: `${area.left}%`, top: `${area.top}%`, width: `${area.width}%`, height: `${area.height}%` }}
           aria-label={`Select ${controlLabel(selected.id, area.control)} on module image`}
-          aria-pressed={selection.control === area.control} title={controlLabel(selected.id, area.control)}
+          aria-pressed={selection.control === area.control} {...tip.bind(area.control)}
           onClick={() => editor.changeSelection({ ...selection, control: area.control })}
           {...controlDropHandlers(selected.id, area.control, disabled ? undefined : type => editor.dropAction(selected.id, area.control, type))}>
           {isKeypad && <KeyDisplayContent device key={currentKeypadPage.id} artwork={currentKeypadPage.artwork?.[String(area.control)]} slot={currentKeypadPage.slots[area.control]} pages={profile.keypad!.pages} depth={keypadDepth(keypadPath)} back={keypadIsBack(keypadPath, area.control)} />}
           {!isKeypad && selected.id !== 'm005s' && <>{livePointer(live, area.control)}{livePulse(live, area.control)}</>}
         </button>)}
         <ModuleGlass module={selected.id} />
+        {tip.node}
       </div>
     </div>;
 }

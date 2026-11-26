@@ -11,6 +11,8 @@ import { dialScreen, knobControls, moduleArtwork } from './module-controls';
 import type { Profile } from './contracts';
 import type { DeviceEditor } from './useDeviceEditor';
 import { controlAction, faderFromKey } from './rig-model';
+import { useControlTooltip } from './ControlTooltip';
+import { controlTip } from './control-tooltip-model';
 import { controlLabel, faderMaximum, modules } from './ui-model';
 import type { ModuleId } from './ui-model';
 
@@ -46,6 +48,7 @@ export function ModuleStage({ module, where, editor, profile, live, stored, knob
   onFaderValue(control: number, value: number): void;
   dropHandlers?(control: number): DropHandlers;
 }) {
+  const tip = useControlTooltip(control => controlTip(profile, module, control, module === 'm4315' ? { keypadPage: editor.currentKeypadPage, keypadPages: profile.keypad?.pages, keypadBack: keypadIsBack(editor.keypadPath, control) } : {}));
   const info = modules.find(entry => entry.id === module)!;
   const art = moduleArtwork[module];
   const isKnob = module === 'm003k';
@@ -67,10 +70,10 @@ export function ModuleStage({ module, where, editor, profile, live, stored, knob
       const isPicked = picked && selected === area.control;
       const label = `Select ${controlLabel(module, area.control)} ${where}`;
       const drop = dropHandlers?.(area.control) ?? {};
-      if (module === 'm131e') return <button key={area.control} type="button" className={`image-control round${isPicked ? ' selected' : ''}${livePressed(live, area.control)}`} style={style} aria-label={label} aria-pressed={isPicked} onClick={() => onSelect(area.control)} {...drop}>{livePointer(live, area.control, true)}</button>;
+      if (module === 'm131e') return <button key={area.control} type="button" className={`image-control round${isPicked ? ' selected' : ''}${livePressed(live, area.control)}`} style={style} aria-label={label} aria-pressed={isPicked} onClick={() => onSelect(area.control)} {...tip.bind(area.control)} {...drop}>{livePointer(live, area.control, true)}</button>;
       if (module === 'm4315') {
         const page = editor.currentKeypadPage;
-        return <button key={area.control} type="button" className={`image-control key-display${isPicked ? ' selected' : ''}${livePressed(live, area.control)}${keySlotUsed(page.slots[area.control], keypadIsBack(editor.keypadPath, area.control)) ? '' : ' unbound'}`} style={style} aria-label={label} aria-pressed={isPicked} onClick={() => onSelect(area.control)} {...drop}>
+        return <button key={area.control} type="button" className={`image-control key-display${isPicked ? ' selected' : ''}${livePressed(live, area.control)}${keySlotUsed(page.slots[area.control], keypadIsBack(editor.keypadPath, area.control)) ? '' : ' unbound'}`} style={style} aria-label={label} aria-pressed={isPicked} onClick={() => onSelect(area.control)} {...tip.bind(area.control)} {...drop}>
           <span className="key-upright" style={upright}>
             <KeyDisplayContent device key={page.id} artwork={page.artwork?.[String(area.control)]} slot={page.slots[area.control]} pages={profile.keypad?.pages ?? []} depth={keypadDepth(editor.keypadPath)} back={keypadIsBack(editor.keypadPath, area.control)} />
           </span>
@@ -79,12 +82,12 @@ export function ModuleStage({ module, where, editor, profile, live, stored, knob
       if (module === 'm005s') {
         const value = faderValue(area.control);
         return <div key={area.control} role="slider" tabIndex={0} className={`image-control fader${action ? ' bound' : ''}${isPicked ? ' selected' : ''}${live?.faders[area.control] !== undefined ? ' live' : ''}${action ? '' : ' unbound'}`} style={style}
-          aria-label={controlLabel(module, area.control)} aria-orientation="vertical" aria-valuemin={0} aria-valuemax={faderMaximum} aria-valuenow={value}
-          onPointerDown={event => onFaderPointer(area.control, event)} onPointerMove={event => onFaderPointer(area.control, event)}
+          aria-label={controlLabel(module, area.control)} aria-orientation="vertical" aria-valuemin={0} aria-valuemax={faderMaximum} aria-valuenow={value} {...tip.bind(area.control)}
+          onPointerDown={event => { tip.bind(area.control).onPointerDown(); onFaderPointer(area.control, event); }} onPointerMove={event => onFaderPointer(area.control, event)}
           onKeyDown={event => { const next = faderFromKey(event.key, value, faderMaximum); if (next !== null) { event.preventDefault(); onSelect(area.control); onFaderValue(area.control, next); } }} {...drop}>
         </div>;
       }
-      return <button key={area.control} type="button" className={`image-control${area.round ? ' round' : ''}${action ? ' bound' : ''}${isPicked ? ' selected' : ''}${livePressed(live, area.control)}${action ? '' : ' unbound'}`} style={style} aria-label={label} aria-pressed={isPicked} onClick={() => onSelect(area.control)} {...drop}>
+      return <button key={area.control} type="button" className={`image-control${area.round ? ' round' : ''}${action ? ' bound' : ''}${isPicked ? ' selected' : ''}${livePressed(live, area.control)}${action ? '' : ' unbound'}`} style={style} aria-label={label} aria-pressed={isPicked} onClick={() => onSelect(area.control)} {...tip.bind(area.control)} {...drop}>
         {livePointer(live, area.control)}
         {livePulse(live, area.control)}
       </button>;
@@ -93,5 +96,6 @@ export function ModuleStage({ module, where, editor, profile, live, stored, knob
   </>;
   return <div className={`rig-stage${isKnob ? ' knob-stage' : ''}${turn ? ' turned' : ''}`} style={{ '--art-aspect': turn && sideways ? 1 / art.aspect : art.aspect, '--turn-aspect': art.aspect } as CSSProperties} role="group" aria-label={`${info.name} ${where}`}>
     {turn ? <div className={`rig-stage-turn r${rotation}`}>{content}</div> : content}
+    {tip.node}
   </div>;
 }

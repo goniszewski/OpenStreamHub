@@ -879,6 +879,8 @@ export const en = {
   'tip.folderHint': { one: 'Opens a page of keys. {count} key assigned.', other: 'Opens a page of keys. {count} keys assigned.' },
   'tip.back': 'Back',
   'tip.backHint': 'Returns to the previous keypad page.',
+  'tip.more': { one: '{count} more binding', other: '{count} more bindings' },
+  'tip.moreHint': 'Select this control to see all of them.',
   'tip.dialFunction': '{name} · {gesture}',
 
   // Key artwork text placement, variable kinds, knob mounting and the lighting scope.

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Profile } from './contracts';
-import { actionDescription, controlTip } from './control-tooltip-model';
+import { actionDescription, controlTip, maxTipRows } from './control-tooltip-model';
 import { keypadRoot, upgradeKeypadProfile } from './keypad-model';
 import { actionLabel } from './ui-model';
 
@@ -45,6 +45,16 @@ describe('controlTip', () => {
   it('shows each dial function and its gesture', () => {
     const tip = controlTip(profile([], { dial_functions: [{ name: 'Volume', bindings: [{ gesture: 'right', action: { type: 'volume', delta: 5 } }] }] }), 'm131e', 0);
     expect(tip.rows[0].gesture).toBe('Volume · Right');
+  });
+  it('sums up a dial with many bindings in one line', () => {
+    const functions = Array.from({ length: 4 }, (_, index) => ({ name: `F${index}`, bindings: [
+      { gesture: 'right' as const, action: { type: 'volume' as const, delta: 5 } }, { gesture: 'left' as const, action: { type: 'volume' as const, delta: -5 } }, { gesture: 'long_press' as const, action: { type: 'toggle_mute' as const } }] }));
+    const tip = controlTip(profile([], { dial_functions: functions }), 'm131e', 0);
+    expect(tip.rows).toHaveLength(maxTipRows);
+    expect(tip.rows.at(-1)!.name).toBe('7 more bindings');
+    const exact = controlTip(profile([], { dial_functions: functions.slice(0, 2) }), 'm131e', 0);
+    expect(exact.rows).toHaveLength(6);
+    expect(exact.rows.at(-1)!.name).not.toContain('more');
   });
   it('describes every kind of action', () => {
     expect(actionDescription({ type: 'obs_stream', op: 'toggle' } as never)).toMatch(/stream/);

@@ -50,6 +50,14 @@ function gestureRows(items: ReadonlyArray<{ gesture: Gesture; action: BindingAct
   return rows.length === 1 ? [{ ...rows[0], gesture: null }] : rows;
 }
 
+// A tooltip is a glance, not a list: past this many rows (a dial with many functions) the rest is summed up in one line.
+export const maxTipRows = 6;
+function capRows(tip: ControlTip): ControlTip {
+  if (tip.rows.length <= maxTipRows) return tip;
+  const hidden = tip.rows.length - (maxTipRows - 1);
+  return { ...tip, rows: [...tip.rows.slice(0, maxTipRows - 1), { gesture: null, name: english('tip.more', { count: hidden }), description: english('tip.moreHint') }] };
+}
+
 export interface TipContext {
   // The keypad page on screen and the pages it can open (keys live on pages, not in profile.bindings).
   keypadPage?: KeypadPage;
@@ -57,7 +65,9 @@ export interface TipContext {
   keypadBack?: boolean;
 }
 
-export function controlTip(profile: Profile, module: ModuleId, control: number, context: TipContext = {}): ControlTip {
+export const controlTip = (profile: Profile, module: ModuleId, control: number, context: TipContext = {}): ControlTip => capRows(buildTip(profile, module, control, context));
+
+function buildTip(profile: Profile, module: ModuleId, control: number, context: TipContext): ControlTip {
   const title = controlLabel(module, control);
   if (module === 'm4315') return keypadTip(title, context.keypadPage?.slots[control] ?? null, context);
   if (module === 'm131e' && profile.dial_functions?.length) {

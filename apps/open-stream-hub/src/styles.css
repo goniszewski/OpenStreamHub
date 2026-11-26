@@ -1104,7 +1104,7 @@ html[data-mod-held] [data-shortcut]:disabled::before { display:none; }
 .plugin-item details.advanced { margin-top:12px; }
 .plugin-item details.advanced summary { cursor:pointer; color:var(--muted); font-size:12px; user-select:none; }
 .plugin-log { max-height:200px; overflow:auto; font-size:11px; background:var(--panel); border:1px solid var(--line); border-radius:7px; padding:10px; white-space:pre-wrap; overflow-wrap:anywhere; }
-.control-tip { position:fixed; z-index:200; transform:translateX(-50%); width:max-content; max-width:280px; display:flex; flex-direction:column; gap:6px; padding:8px 10px; border:1px solid var(--line); border-radius:8px; background:var(--panel); color:var(--text); box-shadow:0 6px 20px rgba(0,0,0,.3); font-size:12px; line-height:1.35; text-align:left; pointer-events:none; animation:tip-in .12s ease both; }
+.control-tip { max-height:calc(100vh - 16px); overflow:hidden; position:fixed; z-index:200; transform:translateX(-50%); width:max-content; max-width:280px; display:flex; flex-direction:column; gap:6px; padding:8px 10px; border:1px solid var(--line); border-radius:8px; background:var(--panel); color:var(--text); box-shadow:0 6px 20px rgba(0,0,0,.3); font-size:12px; line-height:1.35; text-align:left; pointer-events:none; animation:tip-in .12s ease both; }
 .control-tip-title { font-size:11px; font-weight:600; color:var(--muted); text-transform:uppercase; letter-spacing:.04em; }
 .control-tip-row { display:flex; flex-direction:column; gap:1px; }
 .control-tip-name { font-weight:600; }

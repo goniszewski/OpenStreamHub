@@ -47,7 +47,7 @@ describe('quick map legend', () => {
       ] },
     });
     const key = map.modules[0].controls[0];
-    expect(key.folder).toEqual({ name: 'Docs', keys: 1 });
+    expect(key.folder).toEqual({ name: 'Docs' });
     expect(map.legend[0]).toMatchObject({ folder: true, text: 'opens the “Docs” folder (a sub-page)' });
   });
 

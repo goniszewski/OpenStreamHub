@@ -18,8 +18,8 @@ export interface MapControl {
   number: number | null;
   // The label a key shows (keypad only).
   keyLabel?: string;
-  // The folder a keypad key opens, with the number of keys bound inside it.
-  folder?: { name: string; keys: number };
+  // The folder a keypad key opens.
+  folder?: { name: string };
   parts: MapPart[];
 }
 export interface MapModule { module: ServiceModule; title: string; controls: MapControl[] }
@@ -78,8 +78,7 @@ function keypadControls(profile: Profile): MapControl[] {
     const base: MapControl = { module: 'm4315', control, name: controlLabel('m4315', control), number: null, parts: [] };
     if (slot?.type === 'folder') {
       const page = pages.find(item => item.id === slot.page_id);
-      const keys = (page?.slots ?? []).filter(inner => inner !== null).length;
-      return { ...base, keyLabel: page?.name, folder: { name: page?.name ?? english('quickMap.folderMark'), keys } };
+      return { ...base, keyLabel: page?.name, folder: { name: page?.name ?? english('quickMap.folderMark') } };
     }
     if (slot?.type !== 'action') return base;
     const seen = new Set<string>();

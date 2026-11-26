@@ -178,7 +178,7 @@ export function QuickMapDrawing({ map, palette = screenPalette }: { map: QuickMa
         {column.map(item => <g key={item.line.number} transform={`translate(0 ${item.y})`}>
           <circle cx={11} cy={0} r={11} fill={palette.paper} stroke={palette.accent} strokeWidth={1.6} />
           <text x={11} y={4.2} textAnchor="middle" fontSize={12} fontWeight={700} fill={palette.accent}>{item.line.number}</text>
-          <text x={30} y={4} fontSize={13} fontWeight={700} fill={palette.ink}>{item.line.name}{item.line.folder ? ' ▸' : ''}</text>
+          <text x={30} y={4} fontSize={13} fontWeight={700} fill={palette.ink}>{clipKeyLabel(item.line.name, 52)}{item.line.folder ? ' ▸' : ''}</text>
           {item.text.map((text, row) => <text key={row} x={30} y={21 + row * 16} fontSize={12.5} fill={palette.ink}>{text}</text>)}
         </g>)}
       </g>)}

@@ -6,7 +6,7 @@ import type { ControlTip } from './control-tooltip-model';
 export const tooltipDelayMs = 350;
 const halfWidth = 140;
 const gap = 8;
-const estimatedHeight = 140;
+const estimatedHeight = 240; // a full card: a title and up to six rows
 
 interface Anchor { control: number; centre: number; top: number; bottom: number }
 

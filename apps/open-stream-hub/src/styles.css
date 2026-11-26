@@ -1115,3 +1115,10 @@ html[data-mod-held] [data-shortcut]:disabled::before { display:none; }
 .quick-map-button { gap:6px; }
 .quick-map-saved-row { display:flex; align-items:center; gap:10px; margin:8px 0 0; }.quick-map-saved-row .button { flex:none; gap:6px; }
 .quick-map-saved { margin:0; user-select:all; overflow-wrap:anywhere; }
+.control-tip { max-height:calc(100vh - 16px); overflow:hidden; position:fixed; z-index:200; transform:translateX(-50%); width:max-content; max-width:280px; display:flex; flex-direction:column; gap:6px; padding:8px 10px; border:1px solid var(--line); border-radius:8px; background:var(--panel); color:var(--text); box-shadow:0 6px 20px rgba(0,0,0,.3); font-size:12px; line-height:1.35; text-align:left; pointer-events:none; animation:tip-in .12s ease both; }
+.control-tip-title { font-size:11px; font-weight:600; color:var(--muted); text-transform:uppercase; letter-spacing:.04em; }
+.control-tip-row { display:flex; flex-direction:column; gap:1px; }
+.control-tip-name { font-weight:600; }
+.control-tip-gesture { margin-right:6px; font-weight:500; color:var(--muted); }
+.control-tip-gesture::after { content:":"; }
+.control-tip-description { color:var(--muted); }
